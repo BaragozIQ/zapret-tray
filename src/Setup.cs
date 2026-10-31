@@ -155,6 +155,28 @@ namespace ZapretTray
             }
         }
 
+        // Дописать в dst строки из src, которых там нет (вместе с комментарием-заголовком над ними)
+        static void MergeLines(string src, string dst)
+        {
+            var have = new HashSet<string>(Util.ReadEntries(dst), StringComparer.OrdinalIgnoreCase);
+            var add = new List<string>();
+            string header = null;
+            foreach (var raw in File.ReadAllLines(src))
+            {
+                var line = raw.Trim();
+                if (line.StartsWith("#")) { header = line; continue; }
+                if (line.Length == 0 || have.Contains(line)) continue;
+                if (header != null) { add.Add(header); header = null; }
+                add.Add(line);
+                have.Add(line);
+            }
+            if (add.Count == 0) return;
+            var lines = File.ReadAllLines(dst).ToList();
+            while (lines.Count > 0 && lines[lines.Count - 1].Trim().Length == 0) lines.RemoveAt(lines.Count - 1);
+            lines.AddRange(add);
+            Util.WriteLinesAtomic(dst, lines);
+        }
+
         public static void RemoveZapretService()
         {
             foreach (var name in new[] { "zapret", "WinDivert", "WinDivert14" })
@@ -185,7 +207,12 @@ namespace ZapretTray
             {
                 var rel = file.Substring(srcCore.Length + 1);
                 var dst = Path.Combine(dstCore, rel);
-                if (keep.Contains(rel) && File.Exists(dst)) continue;
+                if (keep.Contains(rel) && File.Exists(dst))
+                {
+                    // Свой список сайтов не затираем, но новые сайты из сборки (например, для игр) дописываем
+                    if (string.Equals(rel, @"lists\list-general-user.txt", StringComparison.OrdinalIgnoreCase)) MergeLines(file, dst);
+                    continue;
+                }
                 Directory.CreateDirectory(Path.GetDirectoryName(dst));
                 File.Copy(file, dst, true);
             }
