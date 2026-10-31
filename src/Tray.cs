@@ -737,8 +737,13 @@ namespace ZapretTray
                 checkNowItem.Enabled = true;
                 bool d = t.Result.Item1, y = t.Result.Item2;
                 var text = "Discord " + (d ? "✓" : "✗") + "     YouTube " + (y ? "✓" : "✗");
-                if (!d || !y) text += "\nПопробуй «Подобрать заново».";
-                Notify(text, d && y ? ToolTipIcon.Info : ToolTipIcon.Warning, true);
+                if (d && y)
+                {
+                    Notify(text, ToolTipIcon.Info, true);
+                    return;
+                }
+                // Не открывается - по клику сразу подбираем конфиг получше
+                Offer(text + "\nНажми, чтобы подобрать конфиг получше.", () => { wantOn = true; RunSelect("fast", false, true); });
             }));
         }
 
