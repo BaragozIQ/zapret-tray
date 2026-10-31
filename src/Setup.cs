@@ -220,7 +220,7 @@ namespace ZapretTray
                 File.Copy(file, dst, true);
             }
             // Лишнее из прошлых версий: программа это не использует, а антивирусы на такие скрипты ругаются
-            foreach (var rel in new[] { @"utils\check_updates.enabled", @"utils\test zapret.ps1", @"utils\targets.txt", @"lists\ipset-all.txt.backup" })
+            foreach (var rel in new[] { @"utils\check_updates.enabled", @"utils\test zapret.ps1", @"utils\auto select.ps1", @"utils\targets.txt", @"lists\ipset-all.txt.backup" })
             {
                 var f = Path.Combine(dstCore, rel);
                 try { if (File.Exists(f)) File.Delete(f); } catch { }

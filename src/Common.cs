@@ -39,7 +39,6 @@ namespace ZapretTray
         public string GamesDir { get { return Path.Combine(Lists, "games"); } }
 
         public string BestConfig { get { return Path.Combine(Utils, "best_config.txt"); } }
-        public string AutoSelect { get { return Path.Combine(Utils, "auto select.ps1"); } }
         public string Settings { get { return Path.Combine(Utils, "tray.ini"); } }
         public string ServiceBat { get { return Path.Combine(Core, "service.bat"); } }
 

@@ -80,7 +80,8 @@ namespace ZapretTray
         bool wantOn;            // пользователь хочет, чтобы zapret работал
         bool busy;              // идёт подбор
         string busyText = "";
-        Process selectProc;
+        volatile int selectGen;         // номер текущего подбора; сменился - подбор отменён
+        readonly object selectLock = new object();
         bool watchFailedOnce;
         bool checking;
 
@@ -493,11 +494,7 @@ namespace ZapretTray
         void TurnOff()
         {
             wantOn = false;
-            if (selectProc != null)
-            {
-                try { if (!selectProc.HasExited) selectProc.Kill(); } catch { }
-                selectProc = null;
-            }
+            CancelSelect();
             busy = false;
             Util.KillWinws();
             UpdateState();
@@ -507,7 +504,7 @@ namespace ZapretTray
             if (after != null) after(false);
         }
 
-        // Запуск "auto select.ps1" (скрыто). false - подбор не запустился
+        // Подбор конфига в фоне (Selector). false - подбор не запустился
         bool RunSelect(string mode, bool visible, bool notifyResult)
         {
             if (busy) return false;
@@ -525,55 +522,51 @@ namespace ZapretTray
             busyText = mode == "best" ? "Ищу конфиг с минимальным пингом..." : "Подбираю конфиг...";
             UpdateState();
 
-            var args = "-NoProfile -ExecutionPolicy Bypass -File \"" + paths.AutoSelect + "\" -Mode " + mode + (visible ? "" : " -NoWait");
-            var psi = new ProcessStartInfo("powershell.exe", args) { WorkingDirectory = paths.Core };
-            if (visible)
+            int gen = ++selectGen;
+            bool best = mode == "best";
+            Task.Factory.StartNew(() =>
             {
-                psi.UseShellExecute = true;
-            }
-            else
-            {
-                psi.UseShellExecute = false;
-                psi.CreateNoWindow = true;
-            }
-            try
-            {
-                var p = Process.Start(psi);
-                p.EnableRaisingEvents = true;
-                selectProc = p;
-                p.Exited += (s, e) => OnUi(() => SelectDone(p, notifyResult));
-                return true;
-            }
-            catch (Exception ex)
-            {
-                busy = false;
-                Notify("Не удалось запустить подбор: " + ex.Message, ToolTipIcon.Error);
-                return false;
-            }
+                string error = null;
+                bool ok = false;
+                // Отменённый подбор может ещё доделывать замер - новый ждёт его, чтобы они не гасили winws друг другу
+                lock (selectLock)
+                {
+                    if (gen != selectGen) return Tuple.Create(false, (string)null);
+                    try { ok = Selector.Run(paths, best, () => gen != selectGen, text => OnUi(() => { if (gen == selectGen) { busyText = text; UpdateLabels(); } }), out error); }
+                    catch (Exception ex) { ok = false; error = ex.Message; }
+                }
+                return Tuple.Create(ok, error);
+            }, TaskCreationOptions.LongRunning).ContinueWith(t => OnUi(() => SelectDone(gen, t.Result.Item1, t.Result.Item2, notifyResult)));
+            return true;
         }
 
-        void SelectDone(Process p, bool notifyResult)
+        // Остановить идущий подбор: он сам заметит смену поколения и выйдет
+        void CancelSelect()
         {
-            if (selectProc != p) return;   // уже выключили вручную
-            selectProc = null;
+            selectGen++;
+        }
+
+        void SelectDone(int gen, bool ok, string error, bool notifyResult)
+        {
+            if (gen != selectGen) return;   // уже выключили или запустили новый подбор
             busy = false;
-            int code = -1;
-            try { code = p.ExitCode; } catch { }
+            ok = ok && Util.WinwsRunning();
+            if (error != null) Log("подбор: " + error);
             UpdateState();
             var after = afterSelect;
             afterSelect = null;
             if (after != null)
             {
-                after(code == 0 && Util.WinwsRunning());
+                after(ok);
                 return;
             }
-            if (code == 0 && Util.WinwsRunning())
+            if (ok)
             {
                 if (notifyResult) Notify("zapret работает: " + CurrentConfig());
             }
             else
             {
-                Notify("Не удалось подобрать рабочий конфиг. Проверь интернет или попробуй 'с минимальным пингом'.", ToolTipIcon.Warning);
+                Notify("Не удалось подобрать рабочий конфиг" + (error != null ? ": " + error : "") + ".\nПроверь интернет или попробуй «с минимальным пингом».", ToolTipIcon.Warning);
             }
         }
 
@@ -589,9 +582,7 @@ namespace ZapretTray
                 return;
             }
             Util.KillWinws();
-            var psi = new ProcessStartInfo("cmd.exe", "/c \"\"" + bat + "\"\"") { WorkingDirectory = paths.Core, UseShellExecute = false, CreateNoWindow = true };
-            psi.EnvironmentVariables["NO_UPDATE_CHECK"] = "1";
-            try { Process.Start(psi); } catch { }
+            Selector.StartConfig(paths, bat);
         }
 
         // ---------- сторож ----------
@@ -1023,7 +1014,7 @@ namespace ZapretTray
                 if (busy) return;
 
                 // Останавливаем всё, что держит файлы
-                if (selectProc != null) { try { selectProc.Kill(); } catch { } selectProc = null; }
+                CancelSelect();
                 Util.KillWinws();
                 flows.Stop();
                 try
