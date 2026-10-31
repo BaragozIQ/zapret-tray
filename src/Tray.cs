@@ -232,8 +232,15 @@ namespace ZapretTray
                 Item("Выход", (s, e) => ExitApp())
             });
 
+            SubMenu(gamesItem, true);
+            SubMenu(reselectItem, false);
+            SubMenu(manualItem, true);
+            SubMenu(sitesItem, false);
+            SubMenu(settingsItem, true);
+            SubMenu(themeItem, true);
+
             menu.Opening += (s, e) => { ApplyTheme(); RefreshMenu(); };
-            HookDropDowns(menu.Items);
+            menu.HandleCreated += (s, e) => Theme.RoundCorners(menu);
             ApplyTheme();
             tray.ContextMenuStrip = menu;
         }
@@ -262,27 +269,30 @@ namespace ZapretTray
             return item;
         }
 
-        // Скруглённые углы и тема для всех выпадающих подменю (в том числе создаваемых на лету)
-        void HookDropDowns(ToolStripItemCollection items)
+        // Настраиваем подменю один раз при создании. Менять поля и отступы прямо перед открытием нельзя:
+        // Windows уже посчитала, где его поставить, и подменю съезжает - наезжает на соседнее или отрывается от него
+        static void SubMenu(ToolStripMenuItem item, bool checks)
         {
-            foreach (ToolStripItem i in items)
-            {
-                var mi = i as ToolStripMenuItem;
-                if (mi == null) continue;
-                mi.DropDown.Opening -= OnDropDownOpening;
-                mi.DropDown.Opening += OnDropDownOpening;
-                HookDropDowns(mi.DropDownItems);
-            }
+            var dd = (ToolStripDropDownMenu)item.DropDown;
+            dd.ShowImageMargin = false;
+            dd.ShowCheckMargin = checks;
+            dd.Padding = new Padding(0, 4, 0, 4);
+            dd.HandleCreated += (s, e) => Theme.RoundCorners(dd);
+            dd.Opened += (s, e) => SnapToParent(item, dd);
         }
 
-        void OnDropDownOpening(object sender, System.ComponentModel.CancelEventArgs e)
+        // Вправо Windows ставит подменю с щелью ~13px - мышка в неё проваливается и подменю закрывается.
+        // Придвигаем вплотную (с небольшим нахлёстом), если не вылезаем за край экрана
+        static void SnapToParent(ToolStripMenuItem item, ToolStripDropDown dd)
         {
-            var dd = (ToolStripDropDownMenu)sender;
-            dd.ShowImageMargin = false;
-            dd.ShowCheckMargin = dd.Items.OfType<ToolStripMenuItem>().Any(x => x.CheckOnClick || x.Checked);
-            dd.Padding = new Padding(0, 4, 0, 4);
-            Theme.RoundCorners(dd);
-            HookDropDowns(dd.Items);
+            var parent = item.Owner as ToolStripDropDown;
+            if (parent == null) return;
+            var pb = parent.Bounds;
+            var screen = Screen.FromRectangle(pb).WorkingArea;
+            int x = dd.Left >= pb.Left + pb.Width / 2
+                ? pb.Right - 2                 // открылось вправо
+                : pb.Left - dd.Width + 2;      // открылось влево
+            if (x != dd.Left && x >= screen.Left && x + dd.Width <= screen.Right) dd.Left = x;
         }
 
         void SetTheme(string mode)
@@ -338,7 +348,7 @@ namespace ZapretTray
             }
 
             gamesItem.DropDownItems.Clear();
-            gamesItem.DropDownItems.Add(new ToolStripMenuItem("Добавить игру...", null, (s, e) => AddGame()));
+            gamesItem.DropDownItems.Add(Item("Добавить игру...", (s, e) => AddGame()));
             if (games.Games.Count > 0) gamesItem.DropDownItems.Add(new ToolStripSeparator());
             foreach (var g in games.Games.ToList())
             {
@@ -349,9 +359,9 @@ namespace ZapretTray
                 enable.Checked = game.Enabled;
                 item.DropDownItems.Add(enable);
                 item.DropDownItems.Add(Item("Удалить", (s, e) => RemoveGame(game)));
+                SubMenu(item, true);
                 gamesItem.DropDownItems.Add(item);
             }
-            HookDropDowns(menu.Items);
         }
 
         string CurrentConfig()
