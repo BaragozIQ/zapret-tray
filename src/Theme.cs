@@ -111,9 +111,19 @@ namespace ZapretTray
         public static ToolStripMenuItem Info(string text, string kind)
         {
             var item = new ToolStripMenuItem(text) { Enabled = false, Tag = kind };
-            if (kind == ItemKind.Status) item.Font = Bold;   // чтобы WinForms мерил ширину жирным шрифтом
+            if (kind == ItemKind.Status) item.Font = Bold;
             item.Padding = kind == ItemKind.Status ? new Padding(Left, V, Left + Mark, 1) : new Padding(Left, 0, Left + Mark, 1);
             return item;
+        }
+
+        // Постоянная ширина главного меню: строки статуса всё время меняются, и без этого меню прыгает.
+        // Длинный текст обрезается многоточием (ThemedRenderer рисует с EndEllipsis)
+        public const int MenuWidth = 300;
+
+        public static void FixWidth(ToolStripDropDown dd, int width)
+        {
+            dd.MinimumSize = new Size(width, 0);
+            dd.MaximumSize = new Size(width, 4000);
         }
 
         public static ToolStripSeparator Sep()

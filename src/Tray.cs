@@ -181,6 +181,7 @@ namespace ZapretTray
         {
             menu = new ContextMenuStrip();
             MenuKit.Menu(menu);
+            MenuKit.FixWidth(menu, MenuKit.MenuWidth);
 
             statusItem = Info("...", ItemKind.Status);
             speedItem = Info("", ItemKind.Info);
@@ -384,11 +385,10 @@ namespace ZapretTray
             tray.Icon = busy ? iconBusy : running ? iconOn : iconOff;
             renderer.StatusColor = busy ? Theme.Busy : running ? Theme.On : Theme.Off;
             statusItem.Text = StatusText();
-            speedItem.Text = running || busy ? speedText : "";
-            speedItem.Available = speedItem.Text.Length > 0;
-            uptimeItem.Text = running && !busy ? UptimeText() : "";
-            uptimeItem.Available = uptimeItem.Text.Length > 0;
-            if (menu.Visible) statusItem.Invalidate();
+            // Строки всегда на месте (иначе меню прыгает по высоте) - когда показать нечего, пишем прочерк
+            speedItem.Text = speedText.Length > 0 ? speedText : "↓ —   ↑ —";
+            uptimeItem.Text = busy ? "подождите немного..." : running ? UptimeText() : "не запущен";
+            if (menu.Visible) { statusItem.Invalidate(); speedItem.Invalidate(); uptimeItem.Invalidate(); }
             var text = "zapret: " + StatusText() + (speedText.Length > 0 ? "\n" + speedText : "");
             tray.Text = text.Length > 63 ? text.Substring(0, 63) : text;
         }
