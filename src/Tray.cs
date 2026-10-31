@@ -314,6 +314,18 @@ namespace ZapretTray
 
             gamesItem.DropDownItems.Clear();
             gamesItem.DropDownItems.Add(Item("Добавить игру...", (s, e) => AddGame()));
+
+            // Встроенные игры: обход по их доменам, клик - включить/выключить
+            gamesItem.DropDownItems.Add(MenuKit.Sep());
+            var mine = new HashSet<string>(Util.ReadEntries(paths.ListGeneralUser), StringComparer.OrdinalIgnoreCase);
+            foreach (var p in GamePresets)
+            {
+                var preset = p;
+                var item = Item(preset.Item1, (s, e) => TogglePreset(preset));
+                item.Checked = preset.Item2.All(mine.Contains);
+                gamesItem.DropDownItems.Add(item);
+            }
+
             if (games.Games.Count > 0) gamesItem.DropDownItems.Add(MenuKit.Sep());
             foreach (var g in games.Games.ToList())
             {
@@ -671,7 +683,36 @@ namespace ZapretTray
             Notify((exclude ? "Исключено: " : "Добавлено: ") + value + (note.Length > 0 ? "\n" + note : ""), note.Length > 0 ? ToolTipIcon.Warning : ToolTipIcon.Info, true);
         }
 
-        // Мои сайты: (значение, файл, исключён ли). Заглушки из шаблонов zapret не показываем
+        // Игры, которые работают из коробки: название и домены для обхода (лежат в list-general-user.txt)
+        static readonly Tuple<string, string[]>[] GamePresets =
+        {
+            Tuple.Create("ARC Raiders", new[] { "embark.games", "arcraiders.com" }),
+            Tuple.Create("Wardogs", new[] { "live.wardogs.bulkhead.pragmaengine.com", "firstlook.gg", "api.epicgames.dev" }),
+        };
+
+        static readonly HashSet<string> PresetDomains =
+            new HashSet<string>(GamePresets.SelectMany(p => p.Item2), StringComparer.OrdinalIgnoreCase);
+
+        // Выключенный домен остаётся в файле как "#off домен": zapret его не видит, а установщик не допишет его заново
+        void TogglePreset(Tuple<string, string[]> preset)
+        {
+            var file = paths.ListGeneralUser;
+            bool on = preset.Item2.All(d => Util.ReadEntries(file).Contains(d, StringComparer.OrdinalIgnoreCase));
+            var lines = File.Exists(file) ? File.ReadAllLines(file).ToList() : new List<string>();
+            foreach (var d in preset.Item2)
+            {
+                var plain = lines.FindIndex(l => string.Equals(l.Trim(), d, StringComparison.OrdinalIgnoreCase));
+                var off = lines.FindIndex(l => string.Equals(l.Trim(), Util.OffPrefix + d, StringComparison.OrdinalIgnoreCase));
+                if (on && plain >= 0) lines[plain] = Util.OffPrefix + d;
+                else if (!on && off >= 0) lines[off] = d;
+                else if (!on && plain < 0) lines.Add(d);
+            }
+            Util.WriteLinesAtomic(file, lines);
+            RestartCurrent();
+            Notify(preset.Item1 + ": обход " + (on ? "выключен." : "включён."), ToolTipIcon.Info, true);
+        }
+
+        // Мои сайты: (значение, файл, исключён ли). Заглушки из шаблонов zapret и домены встроенных игр не показываем
         List<Tuple<string, string, bool>> MySites()
         {
             var result = new List<Tuple<string, string, bool>>();
@@ -681,7 +722,7 @@ namespace ZapretTray
             {
                 foreach (var e in Util.ReadEntries(src.Item1))
                 {
-                    if (e.EndsWith(".example.abc") || e == "domain.example.abc" || e.StartsWith("203.0.113.")) continue;
+                    if (e.EndsWith(".example.abc") || e == "domain.example.abc" || e.StartsWith("203.0.113.") || PresetDomains.Contains(e)) continue;
                     result.Add(Tuple.Create(e, src.Item1, src.Item2));
                 }
             }

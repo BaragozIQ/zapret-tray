@@ -159,6 +159,9 @@ namespace ZapretTray
         static void MergeLines(string src, string dst)
         {
             var have = new HashSet<string>(Util.ReadEntries(dst), StringComparer.OrdinalIgnoreCase);
+            // Выключенное пользователем ("#off домен") заново не включаем
+            foreach (var l in File.ReadAllLines(dst))
+                if (l.Trim().StartsWith(Util.OffPrefix, StringComparison.OrdinalIgnoreCase)) have.Add(l.Trim().Substring(Util.OffPrefix.Length).Trim());
             var add = new List<string>();
             string header = null;
             foreach (var raw in File.ReadAllLines(src))

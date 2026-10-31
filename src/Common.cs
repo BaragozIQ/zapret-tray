@@ -119,6 +119,9 @@ namespace ZapretTray
             return Run("sc.exe", "query \"" + name + "\"", out o) == 0;
         }
 
+        // Так помечаем выключенный пользователем домен встроенной игры (для zapret это комментарий)
+        public const string OffPrefix = "#off ";
+
         // Чтение списков: без пустых строк и комментариев, без пробелов по краям
         public static List<string> ReadEntries(string path)
         {
