@@ -179,7 +179,8 @@ namespace ZapretTray
 
         void BuildMenu()
         {
-            menu = new ContextMenuStrip { ShowImageMargin = false, Font = new Font("Segoe UI", 9.75f), Padding = new Padding(0, 6, 0, 6) };
+            menu = new ContextMenuStrip();
+            MenuKit.Menu(menu);
 
             statusItem = Info("...", ItemKind.Status);
             speedItem = Info("", ItemKind.Info);
@@ -191,7 +192,7 @@ namespace ZapretTray
             fastItem = Item("Быстро", (s, e) => { wantOn = true; RunSelect("fast", false, true); });
             bestItem = Item("С минимальным пингом", (s, e) => { wantOn = true; RunSelect("best", false, true); });
             manualItem = Item("Выбрать конфиг вручную", null);
-            reselectItem.DropDownItems.AddRange(new ToolStripItem[] { fastItem, bestItem, new ToolStripSeparator(), manualItem });
+            reselectItem.DropDownItems.AddRange(new ToolStripItem[] { fastItem, bestItem, MenuKit.Sep(), manualItem });
 
             sitesItem = Item("Мои сайты", null);
             checkNowItem = Item("Проверить сейчас", (s, e) => CheckNow());
@@ -213,7 +214,8 @@ namespace ZapretTray
             notifyItem = Check("Уведомления (ошибки показываются всегда)", "notify");
             updateItem = Item("Проверить обновления", (s, e) => CheckUpdate(true));
             settingsItem.DropDownItems.AddRange(new ToolStripItem[] {
-                themeItem, watchdogItem, autostartItem, autoupdateItem, notifyItem, new ToolStripSeparator(),
+                themeItem, MenuKit.Sep(),
+                watchdogItem, autostartItem, autoupdateItem, notifyItem, MenuKit.Sep(),
                 updateItem,
                 Item("Открыть папку", (s, e) => Process.Start("explorer.exe", "\"" + paths.Root + "\"")),
                 Item("Удалить программу...", (s, e) => Uninstall())
@@ -222,43 +224,26 @@ namespace ZapretTray
             toggleItem = Item("Выключить", (s, e) => Toggle());
 
             menu.Items.AddRange(new ToolStripItem[] {
-                statusItem, speedItem, uptimeItem, new ToolStripSeparator(),
+                statusItem, speedItem, uptimeItem, MenuKit.Sep(),
                 gamesItem, reselectItem,
                 Item("Добавить сайт / IP...", (s, e) => AddEntry(false)),
                 Item("Исключить сайт / IP...", (s, e) => AddEntry(true)),
-                sitesItem, checkNowItem, new ToolStripSeparator(),
-                settingsItem, new ToolStripSeparator(),
+                sitesItem, checkNowItem, MenuKit.Sep(),
+                settingsItem, MenuKit.Sep(),
                 toggleItem,
                 Item("Выход", (s, e) => ExitApp())
             });
 
-            SubMenu(gamesItem, true);
-            SubMenu(reselectItem, false);
-            SubMenu(manualItem, true);
-            SubMenu(sitesItem, false);
-            SubMenu(settingsItem, true);
-            SubMenu(themeItem, true);
+            foreach (var sub in new[] { gamesItem, reselectItem, manualItem, sitesItem, settingsItem, themeItem }) MenuKit.SubMenu(sub);
 
             menu.Opening += (s, e) => { ApplyTheme(); RefreshMenu(); };
-            menu.HandleCreated += (s, e) => Theme.RoundCorners(menu);
             ApplyTheme();
             tray.ContextMenuStrip = menu;
         }
 
-        static ToolStripMenuItem Item(string text, EventHandler click)
-        {
-            var item = click != null ? new ToolStripMenuItem(text, null, click) : new ToolStripMenuItem(text);
-            item.Padding = new Padding(6, 4, 6, 4);
-            return item;
-        }
+        static ToolStripMenuItem Item(string text, EventHandler click) { return MenuKit.Item(text, click); }
 
-        // Строка-надпись: не нажимается, но рисуется обычным (не серым) цветом
-        static ToolStripMenuItem Info(string text, string kind)
-        {
-            var item = new ToolStripMenuItem(text) { Enabled = false, Tag = kind };
-            item.Padding = new Padding(6, kind == ItemKind.Status ? 4 : 0, 6, kind == ItemKind.Status ? 2 : 0);
-            return item;
-        }
+        static ToolStripMenuItem Info(string text, string kind) { return MenuKit.Info(text, kind); }
 
         ToolStripMenuItem Check(string text, string key)
         {
@@ -269,31 +254,6 @@ namespace ZapretTray
             return item;
         }
 
-        // Настраиваем подменю один раз при создании. Менять поля и отступы прямо перед открытием нельзя:
-        // Windows уже посчитала, где его поставить, и подменю съезжает - наезжает на соседнее или отрывается от него
-        static void SubMenu(ToolStripMenuItem item, bool checks)
-        {
-            var dd = (ToolStripDropDownMenu)item.DropDown;
-            dd.ShowImageMargin = false;
-            dd.ShowCheckMargin = checks;
-            dd.Padding = new Padding(0, 4, 0, 4);
-            dd.HandleCreated += (s, e) => Theme.RoundCorners(dd);
-            dd.Opened += (s, e) => SnapToParent(item, dd);
-        }
-
-        // Вправо Windows ставит подменю с щелью ~13px - мышка в неё проваливается и подменю закрывается.
-        // Придвигаем вплотную (с небольшим нахлёстом), если не вылезаем за край экрана
-        static void SnapToParent(ToolStripMenuItem item, ToolStripDropDown dd)
-        {
-            var parent = item.Owner as ToolStripDropDown;
-            if (parent == null) return;
-            var pb = parent.Bounds;
-            var screen = Screen.FromRectangle(pb).WorkingArea;
-            int x = dd.Left >= pb.Left + pb.Width / 2
-                ? pb.Right - 2                 // открылось вправо
-                : pb.Left - dd.Width + 2;      // открылось влево
-            if (x != dd.Left && x >= screen.Left && x + dd.Width <= screen.Right) dd.Left = x;
-        }
 
         void SetTheme(string mode)
         {
@@ -340,7 +300,12 @@ namespace ZapretTray
             // Мои сайты: добавленные и исключённые, клик - убрать из списка
             sitesItem.DropDownItems.Clear();
             var entries = MySites();
-            if (entries.Count == 0) sitesItem.DropDownItems.Add(Info("Пока пусто - добавь через «Добавить сайт / IP»", ItemKind.Info));
+            if (entries.Count == 0)
+            {
+                var empty = Item("Пока пусто - добавь через «Добавить сайт / IP»", null);
+                empty.Enabled = false;
+                sitesItem.DropDownItems.Add(empty);
+            }
             foreach (var en in entries)
             {
                 var entry = en;
@@ -349,17 +314,16 @@ namespace ZapretTray
 
             gamesItem.DropDownItems.Clear();
             gamesItem.DropDownItems.Add(Item("Добавить игру...", (s, e) => AddGame()));
-            if (games.Games.Count > 0) gamesItem.DropDownItems.Add(new ToolStripSeparator());
+            if (games.Games.Count > 0) gamesItem.DropDownItems.Add(MenuKit.Sep());
             foreach (var g in games.Games.ToList())
             {
                 var game = g;
-                var item = Item(game.Exe + "   (адресов: " + game.Subnets.Count + ")", null);
-                item.Checked = game.Enabled;
+                var item = Item(game.Exe + "   (адресов: " + game.Subnets.Count + (game.Enabled ? ")" : ", выкл)"), null);
                 var enable = Item("Включена", (s, e) => ToggleGame(game));
                 enable.Checked = game.Enabled;
                 item.DropDownItems.Add(enable);
                 item.DropDownItems.Add(Item("Удалить", (s, e) => RemoveGame(game)));
-                SubMenu(item, true);
+                MenuKit.SubMenu(item);
                 gamesItem.DropDownItems.Add(item);
             }
         }

@@ -83,6 +83,81 @@ namespace ZapretTray
         public const string Info = "info";       // серые строки под статусом
     }
 
+    // Сетка меню. Весь текст во всех меню начинается с одной линии (Left). По бокам отступ вдвое больше вертикального.
+    // Галочки и стрелки - справа, поэтому текст никогда не сдвигается. Текст рисуем сами (ThemedRenderer), WinForms только меряет
+    static class MenuKit
+    {
+        public const int V = 5;                 // отступ текста сверху/снизу
+        public const int H = V * 2;             // отступ текста от края подсветки по бокам
+        public const int Inset = 4;             // подсветка отступает от края меню
+        public const int Left = Inset + H;      // линия текста (14)
+        public const int Mark = 16;             // место справа под галочку / стрелку
+        public const int Dot = 8;               // точка статуса (справа)
+
+        public static readonly Font Font = new Font("Segoe UI", 9.75f);
+        public static readonly Font Bold = new Font("Segoe UI Semibold", 9.75f);
+
+        // Отступы нужны WinForms только для расчёта размеров: справа - место под галочку/стрелку
+        static readonly Padding ItemPad = new Padding(Left, V, Left + Mark, V);
+
+        public static ToolStripMenuItem Item(string text, EventHandler click)
+        {
+            var item = click != null ? new ToolStripMenuItem(text, null, click) : new ToolStripMenuItem(text);
+            item.Padding = ItemPad;
+            return item;
+        }
+
+        // Статус (жирный, с цветной точкой справа) и серые строки под ним: не нажимаются
+        public static ToolStripMenuItem Info(string text, string kind)
+        {
+            var item = new ToolStripMenuItem(text) { Enabled = false, Tag = kind };
+            if (kind == ItemKind.Status) item.Font = Bold;   // чтобы WinForms мерил ширину жирным шрифтом
+            item.Padding = kind == ItemKind.Status ? new Padding(Left, V, Left + Mark, 1) : new Padding(Left, 0, Left + Mark, 1);
+            return item;
+        }
+
+        public static ToolStripSeparator Sep()
+        {
+            return new ToolStripSeparator { Margin = new Padding(0, 3, 0, 3) };
+        }
+
+        public static void Menu(ToolStripDropDownMenu dd)
+        {
+            dd.ShowImageMargin = false;
+            dd.ShowCheckMargin = false;
+            dd.Font = Font;
+            dd.Padding = new Padding(0, Inset, 0, Inset);
+            dd.HandleCreated += (s, e) => Theme.RoundCorners(dd);
+        }
+
+        // Подменю настраиваем один раз при создании: если менять размеры перед открытием,
+        // Windows уже посчитала место, и подменю съезжает. После открытия придвигаем вплотную к родителю
+        public static void SubMenu(ToolStripMenuItem item)
+        {
+            var dd = (ToolStripDropDownMenu)item.DropDown;
+            Menu(dd);
+            // Windows ставит подменю уже после Opened - поправляем следующим сообщением окна
+            dd.Opened += (s, e) => { Snap(item, dd); dd.BeginInvoke((Action)(() => Snap(item, dd))); };
+        }
+
+        // WinForms прибавляет к месту подменю боковые отступы пункта - получается щель, и мышка в неё проваливается.
+        // Придвигаем вплотную с нахлёстом 2px
+        static void Snap(ToolStripMenuItem item, ToolStripDropDown dd)
+        {
+            var parent = item.Owner as ToolStripDropDown;
+            if (parent == null) return;
+            var pb = parent.Bounds;
+            var screen = Screen.FromRectangle(pb).WorkingArea;
+            int x = dd.Left >= pb.Left + pb.Width / 2 ? pb.Right - 2 : pb.Left - dd.Width + 2;
+            // dd.Left у открытого подменю WinForms игнорирует - двигаем само окно
+            if (x != dd.Left && x >= screen.Left && x + dd.Width <= screen.Right)
+                SetWindowPos(dd.Handle, IntPtr.Zero, x, dd.Top, 0, 0, 0x0001 | 0x0004 | 0x0010);   // NOSIZE | NOZORDER | NOACTIVATE
+        }
+
+        [DllImport("user32.dll")]
+        static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    }
+
     class ThemedRenderer : ToolStripRenderer
     {
         public Color StatusColor = Theme.Off;
@@ -120,63 +195,78 @@ namespace ZapretTray
 
         protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
         {
-            if (!e.Item.Selected || !e.Item.Enabled) return;
-            var r = new Rectangle(4, 1, e.Item.Width - 8, e.Item.Height - 2);
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var path = RoundRect(r, 5))
-            using (var b = new SolidBrush(P.Hover)) e.Graphics.FillPath(b, path);
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            if (e.Item.Selected && e.Item.Enabled)
+            {
+                var r = new Rectangle(MenuKit.Inset, 1, W(e.Item) - MenuKit.Inset * 2, e.Item.Height - 2);
+                using (var path = RoundRect(r, 6))
+                using (var b = new SolidBrush(P.Hover)) g.FillPath(b, path);
+            }
+        }
+
+        // Справа: стрелка подменю, галочка или точка статуса - на одной вертикали, с тем же отступом, что и текст слева.
+        // WinForms обрезает рисование пункта по области без отступов, а метка стоит в правом отступе - снимаем обрезку
+        void DrawMark(Graphics g, ToolStripMenuItem mi)
+        {
+            g.ResetClip();
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            int cx = W(mi) - MenuKit.Left - MenuKit.Mark / 2, cy = mi.Height / 2;
+            if ((string)mi.Tag == ItemKind.Status)
+            {
+                int d = MenuKit.Dot;
+                using (var b = new SolidBrush(StatusColor)) g.FillEllipse(b, cx - d / 2, cy - d / 2, d, d);
+            }
+            else if (mi.HasDropDownItems)
+            {
+                using (var p = new Pen(mi.Enabled ? P.SubText : P.Disabled, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                {
+                    g.DrawLine(p, cx - 2, cy - 4, cx + 2, cy);
+                    g.DrawLine(p, cx + 2, cy, cx - 2, cy + 4);
+                }
+            }
+            else if (mi.Checked)
+            {
+                using (var p = new Pen(P.Check, 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+                    g.DrawLines(p, new[] { new Point(cx - 5, cy), new Point(cx - 2, cy + 3), new Point(cx + 5, cy - 4) });
+            }
         }
 
         protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
         {
             int y = e.Item.Height / 2;
-            using (var p = new Pen(P.Separator)) e.Graphics.DrawLine(p, 10, y, e.Item.Width - 10, y);
+            using (var p = new Pen(P.Separator)) e.Graphics.DrawLine(p, MenuKit.Left, y, W(e.Item) - MenuKit.Left, y);
         }
 
+        // Текст рисуем сами: всегда с линии Left и строго по центру строки (WinForms ставит его как придётся)
         protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
         {
             var kind = e.Item.Tag as string;
-            if (kind == ItemKind.Status)
-            {
-                // Цветная точка перед текстом статуса
-                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                int d = 9;
-                int x = e.TextRectangle.X;
-                int y = e.Item.Height / 2 - d / 2;
-                using (var b = new SolidBrush(StatusColor)) e.Graphics.FillEllipse(b, x, y, d, d);
-                var r = e.TextRectangle;
-                r.X += d + 7;
-                using (var f = new Font(e.TextFont, FontStyle.Bold))
-                    TextRenderer.DrawText(e.Graphics, e.Text, f, new Rectangle(r.X, r.Y, e.Item.Width - r.X, r.Height), P.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-                return;
-            }
-            var color = kind == ItemKind.Info ? P.SubText : e.Item.Enabled ? P.Text : P.Disabled;
-            TextRenderer.DrawText(e.Graphics, e.Text, e.TextFont, e.TextRectangle, color, e.TextFormat);
+            var font = kind == ItemKind.Status ? MenuKit.Bold : MenuKit.Font;
+            var color = kind == ItemKind.Status ? P.Text : kind == ItemKind.Info ? P.SubText : e.Item.Enabled ? P.Text : P.Disabled;
+            var pad = e.Item.Padding;
+            var r = new Rectangle(MenuKit.Left, pad.Top, W(e.Item) - MenuKit.Left * 2 - MenuKit.Mark, e.Item.Height - pad.Top - pad.Bottom);
+            TextRenderer.DrawText(e.Graphics, e.Text, font, r, color,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+            var mi = e.Item as ToolStripMenuItem;
+            if (mi != null) DrawMark(e.Graphics, mi);
         }
 
         protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e)
         {
-            // Аккуратная стрелка подменю ›
-            var r = e.ArrowRectangle;
-            int cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2;
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var p = new Pen(e.Item.Enabled ? P.SubText : P.Disabled, 1.6f))
-            {
-                e.Graphics.DrawLine(p, cx - 2, cy - 4, cx + 2, cy);
-                e.Graphics.DrawLine(p, cx + 2, cy, cx - 2, cy + 4);
-            }
+            // Стрелку рисуем сами в OnRenderMenuItemBackground (здесь рисование обрезается по маленькой области)
         }
 
         protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
         {
-            // Галочка ✓ без рамки
-            var r = e.ImageRectangle;
-            int cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2;
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var p = new Pen(P.Check, 2f))
-            {
-                e.Graphics.DrawLines(p, new[] { new Point(cx - 5, cy), new Point(cx - 1, cy + 4), new Point(cx + 6, cy - 4) });
-            }
+            // Галочку рисуем сами в OnRenderMenuItemBackground
+        }
+
+        // Видимая ширина пункта: WinForms делает пункты шире окна меню, правый край уходит за границу
+        static int W(ToolStripItem item)
+        {
+            var o = item.Owner;
+            return o == null ? item.Width : Math.Min(item.Width, o.Width - 2 * item.Bounds.Left);
         }
 
         static GraphicsPath RoundRect(Rectangle r, int radius)
