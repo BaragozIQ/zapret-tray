@@ -219,9 +219,14 @@ namespace ZapretTray
                 Directory.CreateDirectory(Path.GetDirectoryName(dst));
                 File.Copy(file, dst, true);
             }
-            // Флаг проверки обновлений не нужен
-            var upd = Path.Combine(dstCore, @"utils\check_updates.enabled");
-            if (File.Exists(upd)) File.Delete(upd);
+            // Лишнее из прошлых версий: программа это не использует, а антивирусы на такие скрипты ругаются
+            foreach (var rel in new[] { @"utils\check_updates.enabled", @"utils\test zapret.ps1", @"utils\targets.txt", @"lists\ipset-all.txt.backup" })
+            {
+                var f = Path.Combine(dstCore, rel);
+                try { if (File.Exists(f)) File.Delete(f); } catch { }
+            }
+            var results = Path.Combine(dstCore, @"utils\test results");
+            try { if (Directory.Exists(results)) Directory.Delete(results, true); } catch { }
         }
 
         public static void Uninstall(string dir)

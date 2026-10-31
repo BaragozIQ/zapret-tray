@@ -127,11 +127,59 @@ namespace ZapretTray
                 File.WriteAllText(bat, patched, Raw);
             }
 
-            // Родная проверка обновлений zapret нам не нужна (best effort: флаг check_updates.enabled мы и так не ставим)
+            // Конфиги должны звать из service.bat только то, что есть в нашей урезанной версии
+            foreach (var bat in bats)
+            {
+                foreach (Match m in Regex.Matches(File.ReadAllText(bat, Raw), @"call\s+service\.bat\s+(\w+)", RegexOptions.IgnoreCase))
+                    if (!Commands.Contains(m.Groups[1].Value.ToLowerInvariant()))
+                        throw new Exception("конфиг " + Path.GetFileName(bat) + " зовёт неизвестную команду service.bat " + m.Groups[1].Value);
+            }
             var service = Path.Combine(root, "service.bat");
-            var st = File.ReadAllText(service, Raw);
-            File.WriteAllText(service, st.Replace("if defined NO_UPDATE_CHECK exit /b", "exit /b"), Raw);
+            File.WriteAllText(service, SlimService(File.ReadAllText(service, Raw)), Raw);
             return root;
+        }
+
+        // Команды service.bat, которые вызывают конфиги general*.bat
+        static readonly string[] Commands = { "status_zapret", "check_updates", "load_game_filter", "load_user_lists" };
+        // Функции, которые для них нужны
+        static readonly string[] Functions = { "load_user_lists", "tcp_enable", "game_switch_status", "validate_game_filter_range", "gf_validate_item" };
+
+        // Из полного service.bat (меню, службы, правка hosts, скачивание, диагностика) оставляем только то, что зовут конфиги.
+        // Лишнее не нужно программе и пугает антивирусы (Trojan:Script/Wacatac!ml)
+        public static string SlimService(string full)
+        {
+            var version = Regex.Match(full, "LOCAL_VERSION=([0-9.]+)");
+            if (!version.Success) throw new Exception("в service.bat нет LOCAL_VERSION");
+            var lines = full.Replace("\r\n", "\n").Split('\n');
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append("@echo off\r\n");
+            sb.Append("set \"LOCAL_VERSION=" + version.Groups[1].Value + "\"\r\n");
+            sb.Append(":: Zapret Tray: only what general*.bat configs call. Menu, services, hosts editing and downloads are removed.\r\n\r\n");
+            sb.Append("if \"%~1\"==\"status_zapret\" (\r\n    call :tcp_enable\r\n    exit /b\r\n)\r\n");
+            sb.Append("if \"%~1\"==\"check_updates\" exit /b\r\n");
+            sb.Append("if \"%~1\"==\"load_game_filter\" (\r\n    call :game_switch_status\r\n    exit /b\r\n)\r\n");
+            sb.Append("if \"%~1\"==\"load_user_lists\" (\r\n    call :load_user_lists\r\n    exit /b\r\n)\r\n");
+            sb.Append("exit /b\r\n");
+
+            foreach (var name in Functions)
+            {
+                // Функция: от строки ":имя" до первого "exit /b" в начале строки
+                int start = Array.FindIndex(lines, l => l.TrimEnd() == ":" + name);
+                if (start < 0) throw new Exception("в service.bat нет функции " + name);
+                int end = Array.FindIndex(lines, start + 1, l => l.TrimEnd() == "exit /b");
+                if (end < 0) throw new Exception("не нашёл конец функции " + name);
+                var body = lines.Skip(start).Take(end - start + 1).ToArray();
+                foreach (var l in body)
+                {
+                    var call = Regex.Match(l, @"call\s+:(\w+)");
+                    if (call.Success && !Functions.Contains(call.Groups[1].Value)) throw new Exception(name + " зовёт " + call.Groups[1].Value + ", её нет в урезанной версии");
+                }
+                sb.Append("\r\n\r\n");
+                sb.Append(string.Join("\r\n", body));
+            }
+            sb.Append("\r\n");
+            return sb.ToString();
         }
 
         // Заменить файлы, старые сложить в core_backup
