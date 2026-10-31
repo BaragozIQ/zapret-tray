@@ -6,6 +6,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -59,7 +60,13 @@ namespace ZapretTray
         readonly System.Windows.Forms.Timer updateTimer = new System.Windows.Forms.Timer();
         bool updating;
 
-        ToolStripMenuItem statusItem, speedItem, toggleItem, fastItem, bestItem, addItem, excludeItem;
+        ToolStripMenuItem statusItem, speedItem, uptimeItem, toggleItem, reselectItem, fastItem, bestItem, manualItem;
+        ToolStripMenuItem sitesItem, checkNowItem, settingsItem, themeItem, autoupdateItem, notifyItem, updateItem;
+        ContextMenuStrip menu;
+        ThemedRenderer renderer;
+        Palette lastPalette;
+        Action pendingClick;            // что сделать по клику на последнее уведомление
+        Action<bool> afterSelect;       // кто ждёт результат подбора (обновление конфигов)
 
         // Скорость сети: разница счётчиков байт между тиками
         long rxPrev = -1, txPrev = -1;
@@ -96,11 +103,25 @@ namespace ZapretTray
             iconOff = MakeIcon(Color.FromArgb(150, 150, 150));
             iconBusy = MakeIcon(Color.FromArgb(235, 175, 30));
 
+            Theme.Mode = settings.Get("theme") ?? Theme.System;
             BuildMenu();
             tray.Icon = iconOff;
             tray.Text = AppInfo.Name;
             tray.Visible = true;
             tray.DoubleClick += (s, e) => Toggle();
+            tray.BalloonTipClicked += (s, e) =>
+            {
+                var a = pendingClick;
+                pendingClick = null;
+                if (a != null) a();
+            };
+            Microsoft.Win32.SystemEvents.UserPreferenceChanged += (s, e) => OnUi(ApplyTheme);
+
+            // Обновление конфигов прервалось на середине (выключили комп и т.п.) - возвращаем старые
+            if (ZapretUpdater.BackupExists(paths))
+            {
+                try { ZapretUpdater.Restore(paths); } catch { }
+            }
 
             stateTimer.Interval = 2000;
             stateTimer.Tick += (s, e) => UpdateState();
@@ -158,51 +179,163 @@ namespace ZapretTray
 
         void BuildMenu()
         {
-            var menu = new ContextMenuStrip();
-            statusItem = new ToolStripMenuItem("...") { Enabled = false };
-            speedItem = new ToolStripMenuItem("") { Enabled = false };
-            toggleItem = new ToolStripMenuItem("Выключить", null, (s, e) => Toggle());
-            toggleItem.Font = new Font(toggleItem.Font, FontStyle.Bold);
-            fastItem = new ToolStripMenuItem("Подобрать заново (быстро)", null, (s, e) => { wantOn = true; RunSelect("fast", false, true); });
-            bestItem = new ToolStripMenuItem("Подобрать с минимальным пингом...", null, (s, e) => { wantOn = true; RunSelect("best", true, true); });
-            addItem = new ToolStripMenuItem("Добавить сайт / IP...", null, (s, e) => AddEntry(false));
-            excludeItem = new ToolStripMenuItem("Исключить сайт / IP...", null, (s, e) => AddEntry(true));
-            gamesItem = new ToolStripMenuItem("Мои игры");
-            watchdogItem = new ToolStripMenuItem("Сторож (сам чинит, если сломалось)") { CheckOnClick = true };
-            watchdogItem.Checked = settings.GetBool("watchdog", true);
-            watchdogItem.CheckedChanged += (s, e) => settings.SetBool("watchdog", watchdogItem.Checked);
-            autostartItem = new ToolStripMenuItem("Запускать вместе с Windows") { CheckOnClick = true };
+            menu = new ContextMenuStrip { ShowImageMargin = false, Font = new Font("Segoe UI", 9.75f), Padding = new Padding(0, 6, 0, 6) };
+
+            statusItem = Info("...", ItemKind.Status);
+            speedItem = Info("", ItemKind.Info);
+            uptimeItem = Info("", ItemKind.Info);
+
+            gamesItem = Item("Мои игры", null);
+
+            reselectItem = Item("Подобрать заново", null);
+            fastItem = Item("Быстро", (s, e) => { wantOn = true; RunSelect("fast", false, true); });
+            bestItem = Item("С минимальным пингом", (s, e) => { wantOn = true; RunSelect("best", false, true); });
+            manualItem = Item("Выбрать конфиг вручную", null);
+            reselectItem.DropDownItems.AddRange(new ToolStripItem[] { fastItem, bestItem, new ToolStripSeparator(), manualItem });
+
+            sitesItem = Item("Мои сайты", null);
+            checkNowItem = Item("Проверить сейчас", (s, e) => CheckNow());
+
+            // Настройки
+            settingsItem = Item("Настройки", null);
+            themeItem = Item("Тема", null);
+            foreach (var t in new[] { Tuple.Create(Theme.System, "Как в Windows"), Tuple.Create(Theme.Light, "Светлая"), Tuple.Create(Theme.Dark, "Тёмная") })
+            {
+                var mode = t.Item1;
+                themeItem.DropDownItems.Add(Item(t.Item2, (s, e) => SetTheme(mode)));
+                themeItem.DropDownItems[themeItem.DropDownItems.Count - 1].Tag = mode;
+            }
+            watchdogItem = Check("Сторож (сам чинит, если сломалось)", "watchdog");
+            autostartItem = Item("Запускать вместе с Windows", null);
+            autostartItem.CheckOnClick = true;
             autostartItem.Click += (s, e) => SetAutostart(autostartItem.Checked);
+            autoupdateItem = Check("Обновляться автоматически", "autoupdate");
+            notifyItem = Check("Уведомления (ошибки показываются всегда)", "notify");
+            updateItem = Item("Проверить обновления", (s, e) => CheckUpdate(true));
+            settingsItem.DropDownItems.AddRange(new ToolStripItem[] {
+                themeItem, watchdogItem, autostartItem, autoupdateItem, notifyItem, new ToolStripSeparator(),
+                updateItem,
+                Item("Открыть папку", (s, e) => Process.Start("explorer.exe", "\"" + paths.Root + "\"")),
+                Item("Удалить программу...", (s, e) => Uninstall())
+            });
 
-            menu.Items.Add(statusItem);
-            menu.Items.Add(speedItem);
-            menu.Items.Add(toggleItem);
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(fastItem);
-            menu.Items.Add(bestItem);
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(addItem);
-            menu.Items.Add(excludeItem);
-            menu.Items.Add(gamesItem);
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(watchdogItem);
-            menu.Items.Add(autostartItem);
-            menu.Items.Add(new ToolStripMenuItem("Открыть папку", null, (s, e) => Process.Start("explorer.exe", "\"" + paths.Root + "\"")));
-            menu.Items.Add(new ToolStripMenuItem("Проверить обновления (сейчас " + AppInfo.Version + ")", null, (s, e) => CheckUpdate(true)));
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(new ToolStripMenuItem("Удалить программу...", null, (s, e) => Uninstall()));
-            menu.Items.Add(new ToolStripMenuItem("Выход", null, (s, e) => ExitApp()));
+            toggleItem = Item("Выключить", (s, e) => Toggle());
 
-            menu.Opening += (s, e) => RefreshMenu();
+            menu.Items.AddRange(new ToolStripItem[] {
+                statusItem, speedItem, uptimeItem, new ToolStripSeparator(),
+                gamesItem, reselectItem,
+                Item("Добавить сайт / IP...", (s, e) => AddEntry(false)),
+                Item("Исключить сайт / IP...", (s, e) => AddEntry(true)),
+                sitesItem, checkNowItem, new ToolStripSeparator(),
+                settingsItem, new ToolStripSeparator(),
+                toggleItem,
+                Item("Выход", (s, e) => ExitApp())
+            });
+
+            menu.Opening += (s, e) => { ApplyTheme(); RefreshMenu(); };
+            HookDropDowns(menu.Items);
+            ApplyTheme();
             tray.ContextMenuStrip = menu;
+        }
+
+        static ToolStripMenuItem Item(string text, EventHandler click)
+        {
+            var item = click != null ? new ToolStripMenuItem(text, null, click) : new ToolStripMenuItem(text);
+            item.Padding = new Padding(6, 4, 6, 4);
+            return item;
+        }
+
+        // Строка-надпись: не нажимается, но рисуется обычным (не серым) цветом
+        static ToolStripMenuItem Info(string text, string kind)
+        {
+            var item = new ToolStripMenuItem(text) { Enabled = false, Tag = kind };
+            item.Padding = new Padding(6, kind == ItemKind.Status ? 4 : 0, 6, kind == ItemKind.Status ? 2 : 0);
+            return item;
+        }
+
+        ToolStripMenuItem Check(string text, string key)
+        {
+            var item = Item(text, null);
+            item.CheckOnClick = true;
+            item.Checked = settings.GetBool(key, true);
+            item.CheckedChanged += (s, e) => settings.SetBool(key, item.Checked);
+            return item;
+        }
+
+        // Скруглённые углы и тема для всех выпадающих подменю (в том числе создаваемых на лету)
+        void HookDropDowns(ToolStripItemCollection items)
+        {
+            foreach (ToolStripItem i in items)
+            {
+                var mi = i as ToolStripMenuItem;
+                if (mi == null) continue;
+                mi.DropDown.Opening -= OnDropDownOpening;
+                mi.DropDown.Opening += OnDropDownOpening;
+                HookDropDowns(mi.DropDownItems);
+            }
+        }
+
+        void OnDropDownOpening(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            var dd = (ToolStripDropDownMenu)sender;
+            dd.ShowImageMargin = false;
+            dd.ShowCheckMargin = dd.Items.OfType<ToolStripMenuItem>().Any(x => x.CheckOnClick || x.Checked);
+            dd.Padding = new Padding(0, 4, 0, 4);
+            Theme.RoundCorners(dd);
+            HookDropDowns(dd.Items);
+        }
+
+        void SetTheme(string mode)
+        {
+            Theme.Mode = mode;
+            settings.Set("theme", mode);
+            ApplyTheme();
+        }
+
+        // Тема могла смениться (выбрали в меню или Windows переключилась день/ночь) - перерисовываем
+        void ApplyTheme()
+        {
+            var p = Theme.Current;
+            if (p == lastPalette && renderer != null) return;
+            lastPalette = p;
+            var color = renderer != null ? renderer.StatusColor : Theme.Off;
+            renderer = new ThemedRenderer { StatusColor = color };
+            ToolStripManager.Renderer = renderer;
+            menu.Renderer = renderer;
+            Theme.RoundCorners(menu);
         }
 
         void RefreshMenu()
         {
-            statusItem.Text = StatusText();
+            UpdateLabels();
             toggleItem.Text = wantOn ? "Выключить" : "Включить";
-            fastItem.Enabled = bestItem.Enabled = !busy;
+            fastItem.Enabled = bestItem.Enabled = manualItem.Enabled = !busy;
             autostartItem.Checked = Tasks.IsEnabled(AppInfo.AutoTask);
+            updateItem.Text = "Проверить обновления (сейчас " + AppInfo.Version + ", zapret " + ZapretUpdater.LocalVersion(paths) + ")";
+            foreach (ToolStripMenuItem t in themeItem.DropDownItems) t.Checked = (string)t.Tag == Theme.Mode;
+
+            // Выбор конфига вручную: все general*.bat, текущий отмечен
+            manualItem.DropDownItems.Clear();
+            var current = CurrentConfig();
+            bool running = Util.WinwsRunning();
+            foreach (var bat in ConfigFiles())
+            {
+                var name = Path.GetFileNameWithoutExtension(bat);
+                var file = Path.GetFileName(bat);
+                var item = Item(name, (s, e) => UseConfig(file));
+                item.Checked = running && name == current;
+                manualItem.DropDownItems.Add(item);
+            }
+
+            // Мои сайты: добавленные и исключённые, клик - убрать из списка
+            sitesItem.DropDownItems.Clear();
+            var entries = MySites();
+            if (entries.Count == 0) sitesItem.DropDownItems.Add(Info("Пока пусто - добавь через «Добавить сайт / IP»", ItemKind.Info));
+            foreach (var en in entries)
+            {
+                var entry = en;
+                sitesItem.DropDownItems.Add(Item((entry.Item3 ? "−  " : "+  ") + entry.Item1 + (entry.Item3 ? "   (исключён)" : ""), (s, e) => RemoveSite(entry.Item1, entry.Item2)));
+            }
 
             gamesItem.DropDownItems.Clear();
             gamesItem.DropDownItems.Add(new ToolStripMenuItem("Добавить игру...", null, (s, e) => AddGame()));
@@ -210,14 +343,15 @@ namespace ZapretTray
             foreach (var g in games.Games.ToList())
             {
                 var game = g;
-                var item = new ToolStripMenuItem(game.Exe + "   (адресов: " + game.Subnets.Count + ")");
+                var item = Item(game.Exe + "   (адресов: " + game.Subnets.Count + ")", null);
                 item.Checked = game.Enabled;
-                var enable = new ToolStripMenuItem("Включена", null, (s, e) => ToggleGame(game)) { Checked = game.Enabled };
-                var remove = new ToolStripMenuItem("Удалить", null, (s, e) => RemoveGame(game));
+                var enable = Item("Включена", (s, e) => ToggleGame(game));
+                enable.Checked = game.Enabled;
                 item.DropDownItems.Add(enable);
-                item.DropDownItems.Add(remove);
+                item.DropDownItems.Add(Item("Удалить", (s, e) => RemoveGame(game)));
                 gamesItem.DropDownItems.Add(item);
             }
+            HookDropDowns(menu.Items);
         }
 
         string CurrentConfig()
@@ -232,18 +366,43 @@ namespace ZapretTray
             if (Util.WinwsRunning())
             {
                 var cfg = CurrentConfig();
-                return "Работает" + (cfg != null ? ": " + cfg : "");
+                return "Работает" + (cfg != null ? "  ·  " + cfg : "");
             }
             return wantOn ? "Не запущен" : "Выключен";
         }
 
+        // Сколько работает winws: "3 ч 12 мин"
+        static string UptimeText()
+        {
+            try
+            {
+                var p = Process.GetProcessesByName("winws").FirstOrDefault();
+                if (p == null) return "";
+                var t = DateTime.Now - p.StartTime;
+                if (t.TotalMinutes < 1) return "работает меньше минуты";
+                if (t.TotalHours < 1) return "работает " + (int)t.TotalMinutes + " мин";
+                return "работает " + (int)t.TotalHours + " ч " + t.Minutes + " мин";
+            }
+            catch { return ""; }
+        }
+
         void UpdateState()
+        {
+            UpdateSpeed();
+            UpdateLabels();
+        }
+
+        void UpdateLabels()
         {
             bool running = Util.WinwsRunning();
             tray.Icon = busy ? iconBusy : running ? iconOn : iconOff;
-            UpdateSpeed();
+            renderer.StatusColor = busy ? Theme.Busy : running ? Theme.On : Theme.Off;
             statusItem.Text = StatusText();
-            speedItem.Text = speedText;
+            speedItem.Text = running || busy ? speedText : "";
+            speedItem.Available = speedItem.Text.Length > 0;
+            uptimeItem.Text = running && !busy ? UptimeText() : "";
+            uptimeItem.Available = uptimeItem.Text.Length > 0;
+            if (menu.Visible) statusItem.Invalidate();
             var text = "zapret: " + StatusText() + (speedText.Length > 0 ? "\n" + speedText : "");
             tray.Text = text.Length > 63 ? text.Substring(0, 63) : text;
         }
@@ -301,9 +460,19 @@ namespace ZapretTray
             return (bytesPerSec / 1024).ToString("0") + " КБ/с";
         }
 
-        void Notify(string text, ToolTipIcon icon = ToolTipIcon.Info)
+        // Обычные уведомления можно выключить в настройках; ошибки, предупреждения и force - показываются всегда
+        void Notify(string text, ToolTipIcon icon = ToolTipIcon.Info, bool force = false)
         {
+            pendingClick = null;
+            if (!force && icon == ToolTipIcon.Info && !notifyItem.Checked) return;
             tray.ShowBalloonTip(5000, AppInfo.Name, text, icon);
+        }
+
+        // Уведомление, по клику на которое что-то произойдёт
+        void Offer(string text, Action onClick)
+        {
+            Notify(text, ToolTipIcon.Info, true);
+            pendingClick = onClick;
         }
 
         void OnUi(Action a)
@@ -346,16 +515,20 @@ namespace ZapretTray
             busy = false;
             Util.KillWinws();
             UpdateState();
+            // Выключили посреди проверки новых конфигов - считаем, что не проверены, и возвращаем старые
+            var after = afterSelect;
+            afterSelect = null;
+            if (after != null) after(false);
         }
 
-        // Запуск "auto select.ps1": fast - скрыто, best - в окне, чтобы было видно таблицу
-        void RunSelect(string mode, bool visible, bool notifyResult)
+        // Запуск "auto select.ps1" (скрыто). false - подбор не запустился
+        bool RunSelect(string mode, bool visible, bool notifyResult)
         {
-            if (busy) return;
+            if (busy) return false;
             if (Util.ServiceExists("zapret"))
             {
                 Notify("Мешает служба zapret. Запусти Setup.exe и отметь 'Удалить службу zapret'.", ToolTipIcon.Warning);
-                return;
+                return false;
             }
             var vpn = Util.RunningVpn();
             if (vpn != null)
@@ -383,11 +556,13 @@ namespace ZapretTray
                 p.EnableRaisingEvents = true;
                 selectProc = p;
                 p.Exited += (s, e) => OnUi(() => SelectDone(p, notifyResult));
+                return true;
             }
             catch (Exception ex)
             {
                 busy = false;
                 Notify("Не удалось запустить подбор: " + ex.Message, ToolTipIcon.Error);
+                return false;
             }
         }
 
@@ -399,6 +574,13 @@ namespace ZapretTray
             int code = -1;
             try { code = p.ExitCode; } catch { }
             UpdateState();
+            var after = afterSelect;
+            afterSelect = null;
+            if (after != null)
+            {
+                after(code == 0 && Util.WinwsRunning());
+                return;
+            }
             if (code == 0 && Util.WinwsRunning())
             {
                 if (notifyResult) Notify("zapret работает: " + CurrentConfig());
@@ -508,11 +690,77 @@ namespace ZapretTray
 
             if (!changed && note.Length == 0)
             {
-                Notify(value + " уже есть в списке.");
+                Notify(value + " уже есть в списке.", ToolTipIcon.Info, true);
                 return;
             }
             RestartCurrent();
-            Notify((exclude ? "Исключено: " : "Добавлено: ") + value + (note.Length > 0 ? "\n" + note : ""), note.Length > 0 ? ToolTipIcon.Warning : ToolTipIcon.Info);
+            Notify((exclude ? "Исключено: " : "Добавлено: ") + value + (note.Length > 0 ? "\n" + note : ""), note.Length > 0 ? ToolTipIcon.Warning : ToolTipIcon.Info, true);
+        }
+
+        // Мои сайты: (значение, файл, исключён ли). Заглушки из шаблонов zapret не показываем
+        List<Tuple<string, string, bool>> MySites()
+        {
+            var result = new List<Tuple<string, string, bool>>();
+            foreach (var src in new[] {
+                Tuple.Create(paths.ListGeneralUser, false), Tuple.Create(paths.IpsetUser, false),
+                Tuple.Create(paths.ListExcludeUser, true), Tuple.Create(paths.IpsetExcludeUser, true) })
+            {
+                foreach (var e in Util.ReadEntries(src.Item1))
+                {
+                    if (e.EndsWith(".example.abc") || e == "domain.example.abc" || e.StartsWith("203.0.113.")) continue;
+                    result.Add(Tuple.Create(e, src.Item1, src.Item2));
+                }
+            }
+            return result;
+        }
+
+        void RemoveSite(string value, string file)
+        {
+            if (MessageBox.Show("Убрать " + value + " из списка?", AppInfo.Name, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            Util.RemoveEntry(file, value);
+            if (file == paths.IpsetUser) ReapplyIpset();
+            RestartCurrent();
+            Notify("Убрано из списка: " + value, ToolTipIcon.Info, true);
+        }
+
+        // Проверить сейчас: открываются ли Discord и YouTube
+        void CheckNow()
+        {
+            checkNowItem.Enabled = false;
+            Task.Factory.StartNew(() =>
+            {
+                var a = Task.Factory.StartNew(() => Util.HttpWorks("https://discord.com", 8000));
+                var b = Task.Factory.StartNew(() => Util.HttpWorks("https://www.youtube.com", 8000));
+                return Tuple.Create(a.Result, b.Result);
+            }).ContinueWith(t => OnUi(() =>
+            {
+                checkNowItem.Enabled = true;
+                bool d = t.Result.Item1, y = t.Result.Item2;
+                var text = "Discord " + (d ? "✓" : "✗") + "     YouTube " + (y ? "✓" : "✗");
+                if (!d || !y) text += "\nПопробуй «Подобрать заново».";
+                Notify(text, d && y ? ToolTipIcon.Info : ToolTipIcon.Warning, true);
+            }));
+        }
+
+        static readonly Regex ConfigName = new Regex(@"^general.*\.bat$", RegexOptions.IgnoreCase);
+
+        IEnumerable<string> ConfigFiles()
+        {
+            // Сортировка как у людей: ALT2 перед ALT10
+            return Directory.GetFiles(paths.Core, "general*.bat")
+                .Where(f => ConfigName.IsMatch(Path.GetFileName(f)))
+                .OrderBy(f => Regex.Replace(Path.GetFileName(f), @"\d+", m => m.Value.PadLeft(8, '0')));
+        }
+
+        // Выбрать конфиг вручную: он становится первым в запомненных и сразу запускается
+        void UseConfig(string file)
+        {
+            if (busy) return;
+            var saved = Util.ReadEntries(paths.BestConfig).Where(n => !string.Equals(n, file, StringComparison.OrdinalIgnoreCase));
+            Util.WriteLinesAtomic(paths.BestConfig, new[] { file }.Concat(saved).Take(3));
+            wantOn = true;
+            RestartCurrent();
+            Notify("Включён конфиг " + Path.GetFileNameWithoutExtension(file) + ".\nЕсли что-то не открывается - «Проверить сейчас».", ToolTipIcon.Info, true);
         }
 
         // Пересобрать ipset-all.txt из своих IP и включённых игр. Возвращает предупреждение или ""
@@ -545,7 +793,7 @@ namespace ZapretTray
                 Notify("Игра " + exe + " добавлена, но запущен VPN (" + vpn + "): пока он включён, настоящие сервера игры не видны. Выключи его, пока играешь.", ToolTipIcon.Warning);
                 return;
             }
-            Notify("Игра " + exe + " добавлена. Пока она запущена, её сервера будут добавляться сами.\nМожно просто играть.");
+            Notify("Игра " + exe + " добавлена. Пока она запущена, её сервера будут добавляться сами.\nМожно просто играть.", ToolTipIcon.Info, true);
         }
 
         void ToggleGame(Game g)
@@ -683,35 +931,134 @@ namespace ZapretTray
                 if (busy) return;   // не мешаем подбору конфига, попробуем через час
             }
             updating = true;
-            Task.Factory.StartNew(() =>
-            {
-                var rel = Updater.GetLatest();
-                if (rel == null || !Updater.IsNewer(rel.Version, AppInfo.Version)) return Tuple.Create(rel, (string)null, (string)null);
-                try { return Tuple.Create(rel, Updater.Download(rel), (string)null); }
-                catch (Exception ex) { return Tuple.Create(rel, (string)null, ex.Message); }
-            }).ContinueWith(t => OnUi(() =>
+            var localZapret = ZapretUpdater.LocalVersion(paths);
+            Task.Factory.StartNew(() => Tuple.Create(Updater.GetLatest(), Updater.GetLatest(ZapretUpdater.Repo)))
+            .ContinueWith(t => OnUi(() =>
             {
                 updating = false;
-                var rel = t.Result.Item1;
-                var setup = t.Result.Item2;
-                var error = t.Result.Item3;
-                if (rel != null) settings.Set("update_check", DateTime.UtcNow.Ticks.ToString());
+                var app = t.Result.Item1;
+                var core = t.Result.Item2;
+                if (app != null || core != null) settings.Set("update_check", DateTime.UtcNow.Ticks.ToString());
+                bool auto = autoupdateItem.Checked || manual;
 
-                if (setup != null)
+                // Сначала сама программа: в новой версии могут прийти и новые конфиги
+                if (app != null && Updater.IsNewer(app.Version, AppInfo.Version))
                 {
-                    Notify("Ставлю обновление " + rel.Version + "... zapret перезапустится сам.");
-                    try { Updater.RunSetup(setup, paths.Root); }
-                    catch (Exception ex) { Notify("Не удалось запустить обновление: " + ex.Message, ToolTipIcon.Error); }
+                    if (auto) InstallAppUpdate(app, manual);
+                    else Offer("Есть новая версия программы " + app.Version + ". Нажми, чтобы обновить.", () => InstallAppUpdate(app, true));
+                    return;
                 }
-                else if (error != null)
+                if (core != null && Updater.IsNewer(core.Version, localZapret) && (manual || core.Version != settings.Get("zapret_skip")))
                 {
-                    if (manual) Notify("Не удалось скачать обновление: " + error, ToolTipIcon.Warning);
+                    if (auto) InstallZapretUpdate(core, manual);
+                    else Offer("Вышли новые конфиги zapret " + core.Version + ". Нажми, чтобы обновить.", () => InstallZapretUpdate(core, true));
+                    return;
                 }
-                else if (manual)
+                if (manual)
                 {
-                    Notify(rel == null ? "Не получилось проверить обновления - нет связи с GitHub." : "У тебя последняя версия (" + AppInfo.Version + ").");
+                    Notify(app == null && core == null ? "Не получилось проверить обновления - нет связи с GitHub."
+                        : "Всё свежее: программа " + AppInfo.Version + ", zapret " + localZapret + ".", ToolTipIcon.Info, true);
                 }
             }));
+        }
+
+        void InstallAppUpdate(Updater.Release rel, bool manual)
+        {
+            if (updating) return;
+            updating = true;
+            Task.Factory.StartNew(() => Updater.Download(rel)).ContinueWith(t => OnUi(() =>
+            {
+                updating = false;
+                if (t.IsFaulted)
+                {
+                    if (manual) Notify("Не удалось скачать обновление: " + t.Exception.InnerException.Message, ToolTipIcon.Warning);
+                    return;
+                }
+                Notify("Ставлю обновление " + rel.Version + "... zapret перезапустится сам.", ToolTipIcon.Info, true);
+                try { Updater.RunSetup(t.Result, paths.Root); }
+                catch (Exception ex) { Notify("Не удалось запустить обновление: " + ex.Message, ToolTipIcon.Error); }
+            }));
+        }
+
+        // Новые конфиги zapret: скачать и поправить -> заменить -> подобрать конфиг. Не заработало - вернуть старые
+        void InstallZapretUpdate(Updater.Release rel, bool manual)
+        {
+            if (updating) return;
+            if (busy || (!wantOn && !manual))
+            {
+                if (manual) Notify("Сейчас идёт подбор конфига - попробуй чуть позже.", ToolTipIcon.Info, true);
+                return;   // автоматически попробуем в следующий раз
+            }
+            updating = true;
+            Task.Factory.StartNew(() => ZapretUpdater.Prepare(rel)).ContinueWith(t => OnUi(() =>
+            {
+                updating = false;
+                if (t.IsFaulted)
+                {
+                    var err = t.Exception.InnerException.Message;
+                    Log("zapret " + rel.Version + ": " + err);
+                    if (manual) Notify("Не удалось подготовить новые конфиги zapret: " + err, ToolTipIcon.Warning);
+                    return;
+                }
+                if (busy) return;
+
+                // Останавливаем всё, что держит файлы
+                if (selectProc != null) { try { selectProc.Kill(); } catch { } selectProc = null; }
+                Util.KillWinws();
+                flows.Stop();
+                try
+                {
+                    ZapretUpdater.Apply(paths, t.Result);
+                }
+                catch (Exception ex)
+                {
+                    Log("zapret " + rel.Version + ": замена не удалась: " + ex);
+                    try { ZapretUpdater.Restore(paths); } catch { }
+                    RefreshWatchedGames();
+                    if (manual) Notify("Не удалось обновить конфиги zapret: " + ex.Message, ToolTipIcon.Warning);
+                    if (wantOn) RunSelect("fast", false, false);
+                    return;
+                }
+                RefreshWatchedGames();
+                ReapplyIpset();
+
+                wantOn = true;
+                afterSelect = ok =>
+                {
+                    if (ok)
+                    {
+                        ZapretUpdater.DropBackup(paths);
+                        settings.Set("zapret_skip", "");
+                        Notify("Конфиги zapret обновлены до " + rel.Version + ". Работает: " + CurrentConfig());
+                        return;
+                    }
+                    try { ZapretUpdater.Restore(paths); } catch (Exception ex) { Log("откат не удался: " + ex); }
+                    if (wantOn)
+                    {
+                        settings.Set("zapret_skip", rel.Version);   // эту версию больше сами не пробуем
+                        Log("zapret " + rel.Version + ": новые конфиги не заработали, вернул старые");
+                        Notify("Новые конфиги zapret " + rel.Version + " у тебя не заработали - вернул прежние.", ToolTipIcon.Warning);
+                        RunSelect("fast", false, false);
+                    }
+                };
+                if (RunSelect("fast", false, false))
+                {
+                    busyText = "Проверяю новые конфиги zapret...";
+                    UpdateLabels();
+                }
+                else
+                {
+                    var after = afterSelect;
+                    afterSelect = null;
+                    if (after != null) after(false);
+                }
+            }));
+        }
+
+        void Log(string text)
+        {
+            try { File.AppendAllText(Path.Combine(paths.Utils, "tray.log"), DateTime.Now.ToString("yyyy-MM-dd HH:mm") + "  " + text + "\r\n"); }
+            catch { }
         }
 
         void ExitApp()

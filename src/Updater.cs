@@ -20,6 +20,11 @@ namespace ZapretTray
         // null - нет связи или релиза; иначе последний релиз (может быть и не новее нашего)
         public static Release GetLatest()
         {
+            return GetLatest(AppInfo.Repo);
+        }
+
+        public static Release GetLatest(string repo)
+        {
             try
             {
                 ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; // TLS 1.2
@@ -28,7 +33,7 @@ namespace ZapretTray
                     wc.Headers[HttpRequestHeader.UserAgent] = "ZapretTray/" + AppInfo.Version;
                     wc.Headers[HttpRequestHeader.Accept] = "application/vnd.github+json";
                     wc.Encoding = System.Text.Encoding.UTF8;
-                    var json = wc.DownloadString("https://api.github.com/repos/" + AppInfo.Repo + "/releases/latest");
+                    var json = wc.DownloadString("https://api.github.com/repos/" + repo + "/releases/latest");
                     var tag = Regex.Match(json, "\"tag_name\"\\s*:\\s*\"v?([^\"]+)\"");
                     var zip = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+\\.zip)\"");
                     if (!tag.Success || !zip.Success) return null;
@@ -48,26 +53,152 @@ namespace ZapretTray
         // Скачать и распаковать релиз, вернуть путь к Setup.exe из него
         public static string Download(Release rel)
         {
-            var dir = Path.Combine(Path.GetTempPath(), "ZapretTrayUpdate");
-            if (Directory.Exists(dir)) Directory.Delete(dir, true);
-            Directory.CreateDirectory(dir);
-            var zipPath = Path.Combine(dir, "update.zip");
-            using (var wc = new WebClient())
-            {
-                wc.Headers[HttpRequestHeader.UserAgent] = "ZapretTray/" + AppInfo.Version;
-                wc.DownloadFile(rel.ZipUrl, zipPath);
-            }
-            var outDir = Path.Combine(dir, "x");
-            ZipFile.ExtractToDirectory(zipPath, outDir);
+            var outDir = DownloadAndExtract(rel.ZipUrl, "ZapretTrayUpdate");
             var setup = Directory.GetFiles(outDir, AppInfo.SetupExe, SearchOption.AllDirectories).FirstOrDefault();
             if (setup == null) throw new Exception("в архиве обновления нет " + AppInfo.SetupExe);
             return setup;
+        }
+
+        // Скачать zip во временную папку и распаковать, вернуть папку с содержимым
+        public static string DownloadAndExtract(string url, string dirName)
+        {
+            var dir = Path.Combine(Path.GetTempPath(), dirName);
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+            Directory.CreateDirectory(dir);
+            var zipPath = Path.Combine(dir, "download.zip");
+            ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; // TLS 1.2
+            using (var wc = new WebClient())
+            {
+                wc.Headers[HttpRequestHeader.UserAgent] = "ZapretTray/" + AppInfo.Version;
+                wc.DownloadFile(url, zipPath);
+            }
+            var outDir = Path.Combine(dir, "x");
+            ZipFile.ExtractToDirectory(zipPath, outDir);
+            return outDir;
         }
 
         // Setup.exe сам остановит трей, заменит файлы и запустит новую версию
         public static void RunSetup(string setupPath, string installDir)
         {
             Process.Start(new ProcessStartInfo(setupPath, "/update \"" + installDir.TrimEnd('\\') + "\"") { UseShellExecute = true });
+        }
+    }
+
+    // Свежие конфиги zapret прямо от разработчиков (Flowseal): скачать, внести наши правки, заменить, при неудаче - вернуть
+    static class ZapretUpdater
+    {
+        public const string Repo = "Flowseal/zapret-discord-youtube";
+
+        // Что заменяем в lists. ipset-all.txt не трогаем: у разработчиков там заглушка, у нас - полный список
+        static readonly string[] Lists = { "list-general.txt", "list-exclude.txt", "ipset-exclude.txt", "list-google.txt" };
+
+        // Байт в байт, чтобы не испортить кодировку батников
+        static readonly System.Text.Encoding Raw = System.Text.Encoding.GetEncoding(28591);
+
+        static string Backup(AppPaths paths) { return Path.Combine(paths.Root, "core_backup"); }
+
+        public static string LocalVersion(AppPaths paths)
+        {
+            try
+            {
+                var m = Regex.Match(File.ReadAllText(paths.ServiceBat), "LOCAL_VERSION=([0-9.]+)");
+                return m.Success ? m.Groups[1].Value : "0";
+            }
+            catch { return "0"; }
+        }
+
+        // Скачать и подготовить: вернуть папку с уже поправленными файлами. Бросает исключение, если что-то не так
+        public static string Prepare(Updater.Release rel)
+        {
+            var outDir = Updater.DownloadAndExtract(rel.ZipUrl, "ZapretCoreUpdate");
+            var root = Directory.GetFiles(outDir, "service.bat", SearchOption.AllDirectories)
+                .Select(Path.GetDirectoryName)
+                .FirstOrDefault(d => File.Exists(Path.Combine(d, @"bin\winws.exe")));
+            if (root == null) throw new Exception("в архиве нет service.bat и bin\\winws.exe");
+
+            var bats = Directory.GetFiles(root, "general*.bat");
+            if (bats.Length < 3) throw new Exception("в архиве мало конфигов (" + bats.Length + ")");
+            foreach (var bat in bats)
+            {
+                // Движок без своего окна: start "..." /min -> /b
+                var text = File.ReadAllText(bat, Raw);
+                var patched = Regex.Replace(text, "(start\\s+\"[^\"]*\"\\s+)/min(\\s)", "$1/b$2", RegexOptions.IgnoreCase);
+                if (patched == text) throw new Exception("не понял устройство конфига " + Path.GetFileName(bat));
+                File.WriteAllText(bat, patched, Raw);
+            }
+
+            // Родная проверка обновлений zapret нам не нужна (best effort: флаг check_updates.enabled мы и так не ставим)
+            var service = Path.Combine(root, "service.bat");
+            var st = File.ReadAllText(service, Raw);
+            File.WriteAllText(service, st.Replace("if defined NO_UPDATE_CHECK exit /b", "exit /b"), Raw);
+            return root;
+        }
+
+        // Заменить файлы, старые сложить в core_backup
+        public static void Apply(AppPaths paths, string src)
+        {
+            var bak = Backup(paths);
+            if (Directory.Exists(bak)) Directory.Delete(bak, true);
+            Directory.CreateDirectory(Path.Combine(bak, "bin"));
+            Directory.CreateDirectory(Path.Combine(bak, "lists"));
+
+            foreach (var f in Directory.GetFiles(paths.Core, "general*.bat")) File.Copy(f, Path.Combine(bak, Path.GetFileName(f)));
+            File.Copy(paths.ServiceBat, Path.Combine(bak, "service.bat"));
+            foreach (var f in Directory.GetFiles(paths.Bin)) File.Copy(f, Path.Combine(bak, "bin", Path.GetFileName(f)));
+            foreach (var name in Lists)
+            {
+                var f = Path.Combine(paths.Lists, name);
+                if (File.Exists(f)) File.Copy(f, Path.Combine(bak, "lists", name));
+            }
+            File.WriteAllText(Path.Combine(bak, "complete"), "");   // бэкап целый - можно откатываться
+
+            CopyCore(src, paths);
+        }
+
+        // Вернуть то, что было до обновления
+        public static void Restore(AppPaths paths)
+        {
+            var bak = Backup(paths);
+            if (!File.Exists(Path.Combine(bak, "complete")))
+            {
+                // Упали ещё во время бэкапа - файлы не трогали
+                if (Directory.Exists(bak)) Directory.Delete(bak, true);
+                return;
+            }
+            CopyCore(bak, paths);
+            Directory.Delete(bak, true);
+        }
+
+        public static void DropBackup(AppPaths paths)
+        {
+            var bak = Backup(paths);
+            if (Directory.Exists(bak)) Directory.Delete(bak, true);
+        }
+
+        public static bool BackupExists(AppPaths paths)
+        {
+            return Directory.Exists(Backup(paths));
+        }
+
+        static void CopyCore(string src, AppPaths paths)
+        {
+            foreach (var f in Directory.GetFiles(paths.Core, "general*.bat")) File.Delete(f);
+            foreach (var f in Directory.GetFiles(src, "general*.bat")) File.Copy(f, Path.Combine(paths.Core, Path.GetFileName(f)), true);
+            File.Copy(Path.Combine(src, "service.bat"), paths.ServiceBat, true);
+            foreach (var f in Directory.GetFiles(Path.Combine(src, "bin"))) CopyIfChanged(f, Path.Combine(paths.Bin, Path.GetFileName(f)));
+            foreach (var name in Lists)
+            {
+                var f = Path.Combine(src, "lists", name);
+                if (File.Exists(f)) CopyIfChanged(f, Path.Combine(paths.Lists, name));
+            }
+        }
+
+        // Одинаковые файлы не трогаем - так не упрёмся в занятый WinDivert.dll / драйвер
+        static void CopyIfChanged(string src, string dst)
+        {
+            if (File.Exists(dst) && new FileInfo(src).Length == new FileInfo(dst).Length
+                && File.ReadAllBytes(src).SequenceEqual(File.ReadAllBytes(dst))) return;
+            File.Copy(src, dst, true);
         }
     }
 }

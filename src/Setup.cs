@@ -218,7 +218,7 @@ namespace ZapretTray
     {
         readonly string installed;
         readonly TextBox pathBox;
-        readonly CheckBox autostartBox, desktopBox, watchdogBox, serviceBox;
+        readonly CheckBox autostartBox, desktopBox, watchdogBox, autoupdateBox, serviceBox;
         readonly CheckedListBox oldList;
         readonly Button installButton, uninstallButton, cancelButton;
         readonly Label statusLabel;
@@ -231,7 +231,7 @@ namespace ZapretTray
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
             Font = new Font("Segoe UI", 9);
-            ClientSize = new Size(520, 470);
+            ClientSize = new Size(520, 494);
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
             int y = 12;
@@ -264,8 +264,10 @@ namespace ZapretTray
             desktopBox = new CheckBox { Text = "Ярлык на рабочем столе", Left = 12, Top = y, Width = 496, Checked = true };
             y += 24;
             watchdogBox = new CheckBox { Text = "Сторож: сам подбирает другой конфиг, если всё перестало открываться", Left = 12, Top = y, Width = 496, Checked = true };
+            y += 24;
+            autoupdateBox = new CheckBox { Text = "Обновляться автоматически (программа и свежие конфиги zapret, настройки сохраняются)", Left = 12, Top = y, Width = 496, Checked = true };
             y += 32;
-            Controls.AddRange(new Control[] { autostartBox, desktopBox, watchdogBox });
+            Controls.AddRange(new Control[] { autostartBox, desktopBox, watchdogBox, autoupdateBox });
 
             Controls.Add(new Label { Text = "Удалить старое:", Left = 12, Top = y, AutoSize = true, Font = new Font(Font, FontStyle.Bold) });
             y += 22;
@@ -378,7 +380,9 @@ namespace ZapretTray
                     throw new Exception("не удалось создать задачу автозапуска:\n" + err);
                 if (!autostartBox.Checked) Tasks.SetEnabled(AppInfo.AutoTask, false);
 
-                new Settings(paths.Settings).SetBool("watchdog", watchdogBox.Checked);
+                var st = new Settings(paths.Settings);
+                st.SetBool("watchdog", watchdogBox.Checked);
+                st.SetBool("autoupdate", autoupdateBox.Checked);
 
                 Shortcut.Create(Shortcut.StartMenuPath, paths.TrayExePath, AppInfo.Name);
                 if (desktopBox.Checked) Shortcut.Create(Shortcut.DesktopPath, paths.TrayExePath, AppInfo.Name);

@@ -15,7 +15,7 @@ set "VER=%VER:"=%"
 if not exist dist mkdir dist
 powershell -NoProfile -ExecutionPolicy Bypass -File src\make-icon.ps1 -Out src\app.ico || goto :fail
 
-"%CSC%" %OPTS% /win32manifest:src\tray.manifest /out:dist\ZapretTray.exe src\Common.cs src\Games.cs src\Updater.cs src\Tray.cs || goto :fail
+"%CSC%" %OPTS% /win32manifest:src\tray.manifest /out:dist\ZapretTray.exe src\Common.cs src\Games.cs src\Updater.cs src\Theme.cs src\Tray.cs || goto :fail
 "%CSC%" %OPTS% /win32manifest:src\setup.manifest /out:dist\Setup.exe src\Common.cs src\Setup.cs || goto :fail
 
 robocopy payload\core dist\core /MIR /NFL /NDL /NJH /NJS /NP >nul

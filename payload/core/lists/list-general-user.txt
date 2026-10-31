@@ -3,3 +3,7 @@ domain.example.abc
 # ARC Raiders (Embark)
 embark.games
 arcraiders.com
+live.wardogs.bulkhead.pragmaengine.com
+firstlook.gg
+api.epicgames.dev
+t.porno365.golf
