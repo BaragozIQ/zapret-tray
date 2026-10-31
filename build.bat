@@ -30,7 +30,7 @@ copy /y src\readme.txt "%REL%\README.txt" >nul || goto :fail
 copy /y dist\ZapretTray.exe "%REL%\files\" >nul || goto :fail
 robocopy dist\core "%REL%\files\core" /E /NFL /NDL /NJH /NJS /NP >nul
 if %errorlevel% geq 8 goto :fail
-powershell -NoProfile -Command "Compress-Archive -Path '%REL%' -DestinationPath 'release\ZapretTray-%VER%.zip' -Force" || goto :fail
+powershell -NoProfile -Command "Compress-Archive -Path '%REL%\*' -DestinationPath 'release\ZapretTray-%VER%.zip' -Force" || goto :fail
 
 echo Build OK: %~dp0dist
 echo Release: %~dp0release\ZapretTray-%VER%.zip

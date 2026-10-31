@@ -1,7 +1,1 @@
-# Cursor — zapret ломает TLS/stream через ipset Cloudflare
-cursor.sh
-cursor.com
-cursor-cdn.com
-cursorapi.com
-cursorvm.com
-todesktop.com
+# Сюда программа складывает сайты, которые ты сам исключил из обхода.

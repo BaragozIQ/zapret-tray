@@ -64,6 +64,17 @@ namespace ZapretTray
         [DllImport("dwmapi.dll")]
         static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
+        // Тёмный (или светлый) заголовок у обычного окна. Windows 10 2004+ / 11; на старых просто ничего не произойдёт.
+        public static void UseDarkTitleBar(Form f, bool dark)
+        {
+            try
+            {
+                int on = dark ? 1 : 0;
+                DwmSetWindowAttribute(f.Handle, 20, ref on, sizeof(int));   // DWMWA_USE_IMMERSIVE_DARK_MODE
+            }
+            catch { }
+        }
+
         // Windows 11: скруглённые углы и тень у выпадающего меню (на Windows 10 просто ничего не произойдёт)
         public static void RoundCorners(ToolStripDropDown dd)
         {
@@ -158,7 +169,12 @@ namespace ZapretTray
             if (parent == null) return;
             var pb = parent.Bounds;
             var screen = Screen.FromRectangle(pb).WorkingArea;
-            int x = dd.Left >= pb.Left + pb.Width / 2 ? pb.Right - 2 : pb.Left - dd.Width + 2;
+            // Открываем в сторону, где больше места. Меню стоит на одном месте, поэтому все подменю уходят в одну сторону.
+            bool left = (pb.Left - screen.Left) >= (screen.Right - pb.Right);
+            int x = left ? pb.Left - dd.Width + 2 : pb.Right - 2;
+            // Если на выбранной стороне не влезает - уходим на другую
+            if (x < screen.Left || x + dd.Width > screen.Right)
+                x = left ? pb.Right - 2 : pb.Left - dd.Width + 2;
             // dd.Left у открытого подменю WinForms игнорирует - двигаем само окно
             if (x != dd.Left && x >= screen.Left && x + dd.Width <= screen.Right)
                 SetWindowPos(dd.Handle, IntPtr.Zero, x, dd.Top, 0, 0, 0x0001 | 0x0004 | 0x0010);   // NOSIZE | NOZORDER | NOACTIVATE

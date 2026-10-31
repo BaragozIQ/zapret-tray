@@ -196,7 +196,7 @@ namespace ZapretTray
             manualItem = Item("Выбрать конфиг вручную", null);
             reselectItem.DropDownItems.AddRange(new ToolStripItem[] { fastItem, bestItem, MenuKit.Sep(), manualItem });
 
-            sitesItem = Item("Мои сайты", null);
+            sitesItem = Item("Мои сайты...", (s, e) => OpenSites());
             checkNowItem = Item("Проверить сейчас", (s, e) => CheckNow());
 
             // Настройки
@@ -228,15 +228,13 @@ namespace ZapretTray
             menu.Items.AddRange(new ToolStripItem[] {
                 statusItem, speedItem, uptimeItem, MenuKit.Sep(),
                 gamesItem, reselectItem,
-                Item("Добавить сайт / IP...", (s, e) => AddEntry(false)),
-                Item("Исключить сайт / IP...", (s, e) => AddEntry(true)),
                 sitesItem, checkNowItem, MenuKit.Sep(),
                 settingsItem, MenuKit.Sep(),
                 toggleItem,
                 Item("Выход", (s, e) => ExitApp())
             });
 
-            foreach (var sub in new[] { gamesItem, reselectItem, manualItem, sitesItem, settingsItem, themeItem }) MenuKit.SubMenu(sub);
+            foreach (var sub in new[] { gamesItem, reselectItem, manualItem, settingsItem, themeItem }) MenuKit.SubMenu(sub);
 
             menu.Opening += (s, e) => { ApplyTheme(); RefreshMenu(); };
             ApplyTheme();
@@ -297,21 +295,6 @@ namespace ZapretTray
                 var item = Item(name, (s, e) => UseConfig(file));
                 item.Checked = running && name == current;
                 manualItem.DropDownItems.Add(item);
-            }
-
-            // Мои сайты: добавленные и исключённые, клик - убрать из списка
-            sitesItem.DropDownItems.Clear();
-            var entries = MySites();
-            if (entries.Count == 0)
-            {
-                var empty = Item("Пока пусто - добавь через «Добавить сайт / IP»", null);
-                empty.Enabled = false;
-                sitesItem.DropDownItems.Add(empty);
-            }
-            foreach (var en in entries)
-            {
-                var entry = en;
-                sitesItem.DropDownItems.Add(Item((entry.Item3 ? "−  " : "+  ") + entry.Item1 + (entry.Item3 ? "   (исключён)" : ""), (s, e) => RemoveSite(entry.Item1, entry.Item2)));
             }
 
             gamesItem.DropDownItems.Clear();
@@ -627,51 +610,30 @@ namespace ZapretTray
 
         // ---------- свои сайты / IP ----------
 
-        void AddEntry(bool exclude)
+        // Кладёт сайт/IP в нужный файл и убирает из противоположного. Возвращает note (предупреждение по ipset), changed - было ли изменение.
+        string ApplyEntry(string value, bool isIp, bool exclude, out bool changed)
         {
-            var title = exclude ? "Исключить сайт / IP" : "Добавить сайт / IP";
-            var hint = exclude
-                ? "Сайт или IP, который zapret ломает и который надо оставить без обхода.\nНапример: cursor.com или 1.2.3.4"
-                : "Сайт или IP, который не открывается без обхода.\nНапример: example.com, 1.2.3.4 или 1.2.3.0/24";
-            var text = InputDialog.Show(title, hint);
-            if (text == null) return;
-
-            string value;
-            bool isIp;
-            if (!Util.ParseEntry(text, out value, out isIp))
-            {
-                MessageBox.Show("Не понял, что это. Введи домен (example.com) или IP (1.2.3.4).", title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            bool changed;
             string note = "";
             if (exclude)
             {
                 changed = Util.AppendUnique(isIp ? paths.IpsetExcludeUser : paths.ListExcludeUser, value);
                 // Если раньше сами добавили - убираем из списка обхода
-                if (isIp) { Util.RemoveEntry(paths.IpsetUser, value); ReapplyIpset(); }
-                else Util.RemoveEntry(paths.ListGeneralUser, value);
+                if (isIp) { changed |= Util.RemoveEntry(paths.IpsetUser, value); note = ReapplyIpset(); }
+                else changed |= Util.RemoveEntry(paths.ListGeneralUser, value);
             }
             else if (isIp)
             {
                 changed = Util.AppendUnique(paths.IpsetUser, value);
-                Util.RemoveEntry(paths.IpsetExcludeUser, value);
+                changed |= Util.RemoveEntry(paths.IpsetExcludeUser, value);
                 note = ReapplyIpset();
             }
             else
             {
                 changed = Util.AppendUnique(paths.ListGeneralUser, value);
-                Util.RemoveEntry(paths.ListExcludeUser, value);
+                changed |= Util.RemoveEntry(paths.ListExcludeUser, value);
             }
-
-            if (!changed && note.Length == 0)
-            {
-                Notify(value + " уже есть в списке.", ToolTipIcon.Info, true);
-                return;
-            }
-            RestartCurrent();
-            Notify((exclude ? "Исключено: " : "Добавлено: ") + value + (note.Length > 0 ? "\n" + note : ""), note.Length > 0 ? ToolTipIcon.Warning : ToolTipIcon.Info, true);
+            if (changed || note.Length > 0) RestartCurrent();
+            return note;
         }
 
         // Игры, которые работают из коробки: название и домены для обхода (лежат в list-general-user.txt)
@@ -720,13 +682,175 @@ namespace ZapretTray
             return result;
         }
 
+        // Убрать сайт/IP из списка (вызывается из окна "Мои сайты")
         void RemoveSite(string value, string file)
         {
-            if (MessageBox.Show("Убрать " + value + " из списка?", AppInfo.Name, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
             Util.RemoveEntry(file, value);
-            if (file == paths.IpsetUser) ReapplyIpset();
+            if (file == paths.IpsetUser || file == paths.IpsetExcludeUser) ReapplyIpset();
             RestartCurrent();
-            Notify("Убрано из списка: " + value, ToolTipIcon.Info, true);
+        }
+
+        bool IsIpFile(string file)
+        {
+            return string.Equals(file, paths.IpsetUser, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(file, paths.IpsetExcludeUser, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // ---------- окно "Мои сайты": добавить, исключить, переключить режим, убрать - всё в одном месте ----------
+        Form sitesForm;
+        void OpenSites()
+        {
+            if (sitesForm != null) { sitesForm.Activate(); return; }
+            var pal = Theme.Current;
+
+            var f = new Form();
+            sitesForm = f;
+            f.Text = "Мои сайты";
+            f.FormBorderStyle = FormBorderStyle.FixedDialog;
+            f.StartPosition = FormStartPosition.CenterScreen;
+            f.MinimizeBox = f.MaximizeBox = false;
+            f.ShowInTaskbar = false;
+            f.AutoScaleMode = AutoScaleMode.Font;
+            f.Font = new Font("Segoe UI", 9.75f);
+            f.ClientSize = new Size(560, 470);
+            f.BackColor = pal.Back;
+            f.ForeColor = pal.Text;
+            Theme.UseDarkTitleBar(f, pal == Palette.Dark);
+            f.FormClosed += (s, e) => sitesForm = null;
+
+            var addLabel = new Label { Text = "Добавить сайт или IP:", Left = 20, Top = 18, Width = 520, Height = 20, ForeColor = pal.SubText };
+            var addBox = new TextBox
+            {
+                Left = 20, Top = 42, Width = 390, Height = 26,
+                BorderStyle = BorderStyle.FixedSingle, BackColor = pal.Hover, ForeColor = pal.Text
+            };
+            var addBtn = MakeButton("Добавить", pal, true);
+            addBtn.Left = 420; addBtn.Top = 41; addBtn.Width = 120; addBtn.Height = 28;
+
+            var hint = new Label
+            {
+                Left = 20, Top = 78, Width = 520, Height = 20, ForeColor = pal.SubText,
+                Text = "«Обход» — сайт не открывался.   «Исключить» — zapret его ломал."
+            };
+
+            var list = new FlowLayoutPanel
+            {
+                Left = 20, Top = 106, Width = 520, Height = 310,
+                FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true,
+                BackColor = pal.Back, BorderStyle = BorderStyle.None
+            };
+
+            var closeBtn = MakeButton("Закрыть", pal, false);
+            closeBtn.Left = 440; closeBtn.Top = 428; closeBtn.Width = 100; closeBtn.Height = 30;
+            closeBtn.Click += (s, e) => f.Close();
+
+            Action rebuild = null;
+            rebuild = delegate
+            {
+                list.SuspendLayout();
+                list.Controls.Clear();
+                var entries = MySites();
+                if (entries.Count == 0)
+                {
+                    list.Controls.Add(new Label
+                    {
+                        Text = "Пока пусто. Впиши сайт сверху и нажми «Добавить».",
+                        ForeColor = pal.Disabled, Width = 480, Height = 40, Margin = new Padding(4, 12, 4, 0)
+                    });
+                }
+                else
+                {
+                    foreach (var en in entries) list.Controls.Add(MakeSiteRow(en, pal, rebuild, list.ClientSize.Width));
+                }
+                list.ResumeLayout();
+            };
+
+            Action add = delegate
+            {
+                string value; bool isIp;
+                if (!Util.ParseEntry(addBox.Text, out value, out isIp))
+                {
+                    MessageBox.Show(f, "Не понял, что это. Впиши домен (youtube.com) или IP (1.2.3.4).", "Мои сайты", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                bool changed;
+                ApplyEntry(value, isIp, false, out changed);   // по умолчанию - на обход, режим потом переключается в строке
+                addBox.Clear();
+                addBox.Focus();
+                rebuild();
+            };
+            addBtn.Click += (s, e) => add();
+            addBox.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; add(); } };
+
+            f.Controls.AddRange(new Control[] { addLabel, addBox, addBtn, hint, list, closeBtn });
+            f.AcceptButton = addBtn;
+            f.CancelButton = closeBtn;
+            rebuild();
+            f.Show();
+            f.Activate();
+        }
+
+        // Одна строка списка: название + переключатель Обход/Исключить + крестик
+        Control MakeSiteRow(Tuple<string, string, bool> entry, Palette pal, Action refresh, int width)
+        {
+            var value = entry.Item1;
+            var exclude = entry.Item3;
+            var isIp = IsIpFile(entry.Item2);
+
+            var row = new Panel { Width = width - 6, Height = 44, Margin = new Padding(0, 0, 0, 6), BackColor = pal.Hover };
+
+            var name = new Label
+            {
+                Text = value, Left = 12, Top = 0, Width = row.Width - 300, Height = row.Height,
+                TextAlign = ContentAlignment.MiddleLeft, ForeColor = pal.Text, AutoEllipsis = true
+            };
+
+            var bypass = MakeSegment("Обход", pal, !exclude);
+            var excl = MakeSegment("Исключить", pal, exclude);
+            bypass.Left = row.Width - 232; bypass.Top = 7;
+            excl.Left = bypass.Right; excl.Top = 7;
+
+            var del = new Button
+            {
+                Text = "✕", Left = row.Width - 38, Top = 7, Width = 30, Height = 30,
+                FlatStyle = FlatStyle.Flat, BackColor = pal.Hover, ForeColor = pal.SubText, TabStop = false
+            };
+            del.FlatAppearance.BorderSize = 0;
+            del.FlatAppearance.MouseOverBackColor = Color.FromArgb(200, 70, 70);
+
+            bypass.Click += (s, e) => { if (exclude) { bool c; ApplyEntry(value, isIp, false, out c); refresh(); } };
+            excl.Click += (s, e) => { if (!exclude) { bool c; ApplyEntry(value, isIp, true, out c); refresh(); } };
+            del.Click += (s, e) => { RemoveSite(value, entry.Item2); refresh(); };
+
+            row.Controls.AddRange(new Control[] { name, bypass, excl, del });
+            return row;
+        }
+
+        static Button MakeSegment(string text, Palette pal, bool active)
+        {
+            var b = new Button
+            {
+                Text = text, Width = 97, Height = 30, FlatStyle = FlatStyle.Flat, TabStop = false,
+                BackColor = active ? pal.Check : pal.Back,
+                ForeColor = active ? Color.White : pal.SubText
+            };
+            b.FlatAppearance.BorderSize = active ? 0 : 1;
+            b.FlatAppearance.BorderColor = pal.Separator;
+            b.FlatAppearance.MouseOverBackColor = active ? pal.Check : pal.Separator;
+            return b;
+        }
+
+        static Button MakeButton(string text, Palette pal, bool accent)
+        {
+            var b = new Button
+            {
+                Text = text, FlatStyle = FlatStyle.Flat,
+                BackColor = accent ? pal.Check : pal.Hover,
+                ForeColor = accent ? Color.White : pal.Text
+            };
+            b.FlatAppearance.BorderSize = accent ? 0 : 1;
+            b.FlatAppearance.BorderColor = pal.Separator;
+            return b;
         }
 
         // Проверить сейчас: открываются ли Discord и YouTube

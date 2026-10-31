@@ -156,6 +156,20 @@ namespace ZapretTray
         }
 
         // Дописать в dst строки из src, которых там нет (вместе с комментарием-заголовком над ними)
+        // Старые дефолтные исключения, уехавшие во встроенный список - убираем их из пользовательского файла
+        static readonly string[] OldBundledExclude =
+            { "cursor.sh", "cursor.com", "cursor-cdn.com", "cursorapi.com", "cursorvm.com", "todesktop.com" };
+
+        static void RemoveBundledExclude(string dst)
+        {
+            if (!File.Exists(dst)) return;
+            var drop = new HashSet<string>(OldBundledExclude, StringComparer.OrdinalIgnoreCase);
+            var kept = File.ReadAllLines(dst)
+                .Where(l => !drop.Contains(l.Trim()) && l.Trim().IndexOf("Cursor", StringComparison.OrdinalIgnoreCase) < 0)
+                .ToList();
+            Util.WriteLinesAtomic(dst, kept);
+        }
+
         static void MergeLines(string src, string dst)
         {
             var have = new HashSet<string>(Util.ReadEntries(dst), StringComparer.OrdinalIgnoreCase);
@@ -214,6 +228,9 @@ namespace ZapretTray
                 {
                     // Свой список сайтов не затираем, но новые сайты из сборки (например, для игр) дописываем
                     if (string.Equals(rel, @"lists\list-general-user.txt", StringComparison.OrdinalIgnoreCase)) MergeLines(file, dst);
+                    // Раньше дефолтные исключения Cursor лежали в пользовательском файле и мусорили в списке "Мои сайты".
+                    // Теперь они во встроенном list-exclude.txt - вычищаем их из пользовательского у тех, кто уже поставил.
+                    if (string.Equals(rel, @"lists\list-exclude-user.txt", StringComparison.OrdinalIgnoreCase)) RemoveBundledExclude(dst);
                     continue;
                 }
                 Directory.CreateDirectory(Path.GetDirectoryName(dst));
