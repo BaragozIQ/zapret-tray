@@ -17,7 +17,7 @@ namespace ZapretTray
     static class AppInfo
     {
         public const string Name = "Zapret Tray";
-        public const string Version = "0.3";
+        public const string Version = "0.4";
         public const string RunTask = "ZapretTray";
         public const string AutoTask = "ZapretTray Autostart";
         public const string TrayExe = "ZapretTray.exe";
@@ -277,15 +277,65 @@ namespace ZapretTray
             "nekoray", "nekobox", "hiddify", "happ", "outline", "amneziavpn", "openvpn", "wireguard"
         };
 
-        // Имя VPN-клиента, через который сейчас идёт трафик, или null: с ним подбор и сбор адресов игр врут.
-        // Просто запущенный клиент не считается: Clash часто висит включённым, а трафик идёт напрямую
+        // Что мешает проверкам: имя VPN-клиента или адаптера, через который сейчас идёт трафик, или null.
+        // Просто запущенный клиент не считается: Clash часто висит включённым, а трафик идёт напрямую.
+        // Незнакомый клиент тоже заметим: смотрим, куда Windows отправляет трафик
         public static string RunningVpn()
         {
             foreach (var name in VpnProcesses)
             {
-                if (Process.GetProcessesByName(name).Length > 0) return VpnCarriesTraffic() ? name : null;
+                if (Process.GetProcessesByName(name).Length > 0 && VpnCarriesTraffic()) return name;
             }
+            var route = RouteAdapter();
+            return route != null && LooksLikeVpn(route) ? route.Name : null;
+        }
+
+        public static List<string> VpnClientsRunning()
+        {
+            return VpnProcesses.Where(n => Process.GetProcessesByName(n).Length > 0).ToList();
+        }
+
+        [System.Runtime.InteropServices.DllImport("iphlpapi.dll")]
+        static extern int GetBestInterface(uint destAddr, out int bestIfIndex);
+
+        // Адаптер, через который Windows отправит трафик в интернет. Сам ничего не отправляет
+        public static System.Net.NetworkInformation.NetworkInterface RouteAdapter()
+        {
+            try
+            {
+                int index;
+                if (GetBestInterface(BitConverter.ToUInt32(IPAddress.Parse("8.8.8.8").GetAddressBytes(), 0), out index) != 0) return null;
+                foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    try
+                    {
+                        if (ni.Supports(System.Net.NetworkInformation.NetworkInterfaceComponent.IPv4) && ni.GetIPProperties().GetIPv4Properties().Index == index) return ni;
+                    }
+                    catch { }
+                }
+            }
+            catch { }
             return null;
+        }
+
+        public static bool LooksLikeVpn(System.Net.NetworkInformation.NetworkInterface ni)
+        {
+            return ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Tunnel
+                || ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Ppp
+                || Regex.IsMatch(ni.Name + " " + ni.Description, @"vpn|tunnel|\btap\b|\btun\b|wintun|wireguard|\bmeta\b|outline|amnezia|tailscale|zerotier|nord|proton|surfshark|mullvad", RegexOptions.IgnoreCase);
+        }
+
+        public static bool SystemProxyOn()
+        {
+            try
+            {
+                using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Internet Settings"))
+                {
+                    var proxy = k == null ? null : k.GetValue("ProxyEnable");
+                    return proxy is int && (int)proxy != 0;
+                }
+            }
+            catch { return false; }
         }
 
         // Поднят адаптер VPN (режим TUN) или включён системный прокси
@@ -297,14 +347,9 @@ namespace ZapretTray
                 {
                     if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
                     if (ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback) continue;
-                    if (Regex.IsMatch(ni.Name + " " + ni.Description, @"tunnel|\btap\b|\btun\b|wintun|wireguard|\bmeta\b|outline|amnezia", RegexOptions.IgnoreCase)) return true;
+                    if (LooksLikeVpn(ni)) return true;
                 }
-                using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Internet Settings"))
-                {
-                    var proxy = k == null ? null : k.GetValue("ProxyEnable");
-                    if (proxy is int && (int)proxy != 0) return true;
-                }
-                return false;
+                return SystemProxyOn();
             }
             catch { return true; }   // не смогли понять - считаем, что VPN работает: так ничего не сломаем
         }

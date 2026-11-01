@@ -138,9 +138,21 @@ namespace ZapretTray
                     if (p.Id == self) continue;
                     try { p.Kill(); p.WaitForExit(5000); } catch { }
                 }
-                Util.KillWinws();
-                Thread.Sleep(500);
-                CopyFiles(target);
+                // Файлы движка освобождаются не сразу: winws мог ещё завершаться или его успел запустить подбор
+                for (int attempt = 1; ; attempt++)
+                {
+                    Util.KillWinws();
+                    Thread.Sleep(500 * attempt);
+                    try
+                    {
+                        CopyFiles(target);
+                        break;
+                    }
+                    catch (IOException)
+                    {
+                        if (attempt >= 5) throw;
+                    }
+                }
                 File.WriteAllText(log, DateTime.Now + " OK -> " + AppInfo.Version);
             }
             catch (Exception ex)

@@ -142,6 +142,25 @@ namespace ZapretTray
         const int LogLines = 200;
         static readonly string[] DnsHosts = { "www.youtube.com", "i.ytimg.com", "discord.com" };
         static readonly string[] DnsServers = { null, "1.1.1.1", "8.8.8.8", "9.9.9.9" };   // null - DNS Windows
+        // Другие обходчики: вместе с zapret они мешают друг другу
+        static readonly string[] OtherBypass = { "goodbyedpi", "byedpi", "ciadpi", "spoofdpi", "warp-svc" };
+
+        // Короткий вывод в начале отчёта: что не так и куда смотреть. Работает одинаково на любом компьютере
+        static List<string> Conclusions(bool winws, bool internet, string vpn, List<string> others, bool service, List<SiteResult> sites, bool dnsFixed)
+        {
+            var o = new List<string>();
+            if (!internet) o.Add("Нет интернета: дело не в программе.");
+            if (!winws) o.Add("zapret не запущен: обхода сейчас нет.");
+            if (service) o.Add("Установлена служба zapret: она мешает, нужно убрать через Setup.exe.");
+            if (others.Count > 0) o.Add("Запущен другой обходчик (" + string.Join(", ", others) + "): может мешать.");
+            if (vpn != null) o.Add("Трафик идёт через VPN (" + vpn + "): проверки ниже показывают его сеть, а не работу zapret.");
+            var noConnect = sites.Where(r => r.Status == SiteStatus.NoConnect).Select(r => r.Url).ToList();
+            var dns = sites.Where(r => r.DnsProblem).Select(r => r.Url).ToList();
+            if (noConnect.Count > 0) o.Add("Адрес есть, но не открывается: " + string.Join(", ", noConnect) + ". Похоже на конфиг, нужен другой.");
+            if (dns.Count > 0) o.Add("DNS не находит адрес: " + string.Join(", ", dns) + (dnsFixed ? ". Исправление DNS уже включено." : ". Поможет «Исправить DNS»."));
+            if (o.Count == 0) o.Add("Явных проблем не видно: все проверенные сайты открываются.");
+            return o;
+        }
 
         // Что отвечает каждый обычный DNS: так видно, кто подменяет ответ
         static string DnsLine(string host, string server)
@@ -156,24 +175,45 @@ namespace ZapretTray
         }
 
         // Текст отчёта. Файл - запасной вариант, поэтому его ошибка отчёт не отменяет
-        public static string Build(AppPaths paths, string status)
+        public static string Build(AppPaths paths, string status, List<string> userSites)
         {
             var o = new StringBuilder();
+            var winws = Util.WinwsRunning();
+            var vpn = Util.RunningVpn();
+            var others = OtherBypass.Where(n => Process.GetProcessesByName(n).Length > 0).ToList();
+            var service = Util.ServiceExists("zapret");
+            var dnsFixed = DnsFix.IsApplied(paths);
+            var internet = Util.InternetUp();
+            var sites = SiteCheck.RunAll(Selector.Targets, 8);
+            var ini = new Settings(paths.Settings);
+
             o.AppendLine("=== ZAPRET TRAY: ОТЧЁТ ===");
             o.AppendLine(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            o.AppendLine();
+            o.AppendLine("=== ВЫВОД ===");
+            foreach (var line in Conclusions(winws, internet, vpn, others, service, sites, dnsFixed)) o.AppendLine("- " + line);
+
+            o.AppendLine();
+            o.AppendLine("=== ПРОГРАММА ===");
             o.AppendLine("Программа " + AppInfo.Version + ", zapret " + ZapretUpdater.LocalVersion(paths));
             o.AppendLine("Windows: сборка " + DnsFix.WindowsBuild());
             o.AppendLine("Статус: " + status);
-            o.AppendLine("winws: " + (Util.WinwsRunning() ? "работает" : "не работает"));
+            o.AppendLine("winws: " + (winws ? "работает" : "не работает"));
             o.AppendLine("Конфиги: " + string.Join(", ", Util.ReadEntries(paths.BestConfig)));
-            o.AppendLine("VPN: " + (Util.RunningVpn() ?? "не найден"));
-            o.AppendLine("Служба zapret: " + (Util.ServiceExists("zapret") ? "есть" : "нет"));
-            o.AppendLine("Исправление DNS: " + (DnsFix.IsApplied(paths) ? "включено" : "выключено"));
+            o.AppendLine("Сторож: " + (ini.GetBool("watchdog", true) ? "включён" : "выключен") + ", автообновление: " + (ini.GetBool("autoupdate", true) ? "включено" : "выключено"));
+            o.AppendLine("Игровой фильтр: " + (File.Exists(Path.Combine(paths.Utils, "game_filter.enabled")) ? "включён" : "выключен"));
+            o.AppendLine("Служба zapret: " + (service ? "есть" : "нет"));
+            o.AppendLine("Другие обходчики: " + (others.Count > 0 ? string.Join(", ", others) : "нет"));
+            o.AppendLine("Исправление DNS: " + (dnsFixed ? "включено" : "выключено"));
 
             o.AppendLine();
             o.AppendLine("=== САЙТЫ ===");
-            foreach (var r in SiteCheck.RunAll(Selector.Targets, 8))
+            foreach (var r in sites)
                 o.AppendLine(r.Url + ": " + r.Text);
+
+            // Только количество: сами сайты - личное
+            if (userSites.Count > 0)
+                o.AppendLine("Мои сайты: открылось " + SiteCheck.RunAll(userSites, 8).Count(r => r.Opened) + " из " + userSites.Count);
 
             o.AppendLine();
             o.AppendLine("=== ОБЫЧНЫЙ DNS ===");
@@ -182,13 +222,20 @@ namespace ZapretTray
 
             o.AppendLine();
             o.AppendLine("=== СЕТЬ ===");
+            o.AppendLine("Интернет: " + (internet ? "есть" : "нет"));
+            var route = Util.RouteAdapter();
+            o.AppendLine("Трафик идёт через: " + (route != null ? route.Name + (Util.LooksLikeVpn(route) ? " (похоже на VPN)" : "") : "не удалось определить"));
+            var clients = Util.VpnClientsRunning();
+            o.AppendLine("Запущенные VPN-клиенты: " + (clients.Count > 0 ? string.Join(", ", clients) : "не найдены"));
+            o.AppendLine("Системный прокси: " + (Util.SystemProxyOn() ? "включён" : "выключен"));
+            o.AppendLine("Адаптеры:");
             try
             {
                 foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
                 {
                     if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
                     var dns = ni.GetIPProperties().DnsAddresses.Select(a => a.ToString());
-                    o.AppendLine(ni.Name + " (" + ni.NetworkInterfaceType + "): DNS " + string.Join(", ", dns));
+                    o.AppendLine("- " + ni.Name + " (" + ni.NetworkInterfaceType + ", " + ni.Description + (Util.LooksLikeVpn(ni) ? ", похоже на VPN" : "") + "): DNS " + string.Join(", ", dns));
                 }
             }
             catch (Exception ex) { o.AppendLine(ex.Message); }

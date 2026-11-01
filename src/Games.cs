@@ -74,6 +74,22 @@ namespace ZapretTray
             }
         }
 
+        // Подгрузка настроек: все игры и их адреса заменяются новыми
+        public void Replace(IEnumerable<Game> imported)
+        {
+            lock (sync)
+            {
+                foreach (var g in Games)
+                {
+                    try { File.Delete(GameFile(g.Exe)); } catch { }
+                }
+                Games.Clear();
+                Games.AddRange(imported);
+                SaveList();
+                foreach (var g in Games) SaveSubnets(g);
+            }
+        }
+
         public void SetEnabled(Game g, bool enabled)
         {
             lock (sync) { g.Enabled = enabled; SaveList(); }

@@ -21,6 +21,7 @@ namespace ZapretTray
         };
 
         const int CurlTimeout = 8;
+        const int ConfirmPauseMs = 4000;
         const int BestRounds = 3;   // в режиме best меряем по 3 раза: пинг скачет, один замер - лотерея
 
         class Score
@@ -56,7 +57,7 @@ namespace ZapretTray
                     progress("Проверяю " + Path.GetFileNameWithoutExtension(file) + "...");
                     StopZapret();
                     StartConfig(paths, file);
-                    if (WaitWinwsReady() && Check(name).Count(r => r.Item1) == Targets.Length)
+                    if (WaitWinwsReady() && AllOpen(name) && AllOpenAfterPause(name))
                     {
                         // Рабочий - наверх списка, остальные запомненные за ним
                         Util.WriteLinesAtomic(paths.BestConfig, new[] { name }.Concat(saved.Where(n => n != name)));
@@ -80,7 +81,12 @@ namespace ZapretTray
                 var m = Measure(rounds, Path.GetFileName(file));
                 m.File = file;
                 scores.Add(m);
-                if (!best && m.Ok == Targets.Length) break;   // быстрый режим: первый, где всё работает
+                // Быстрый режим: первый, где всё работает. Случайную удачу отсеивает вторая проверка
+                if (!best && m.Ok == Targets.Length)
+                {
+                    if (AllOpenAfterPause(Path.GetFileName(file))) break;
+                    m.Ok--;
+                }
             }
             StopZapret();
             if (cancelled()) return false;
@@ -142,6 +148,17 @@ namespace ZapretTray
             Logger.Write("подбор: " + config + ": открылось " + (results.Count - failed.Count) + " из " + results.Count
                          + (failed.Count > 0 ? " (" + string.Join("; ", failed) + ")" : ""));
             return results.Select(r => Tuple.Create(r.Opened, r.TlsMs)).ToList();
+        }
+
+        static bool AllOpen(string config)
+        {
+            return Check(config).Count(r => r.Item1) == Targets.Length;
+        }
+
+        static bool AllOpenAfterPause(string config)
+        {
+            Thread.Sleep(ConfirmPauseMs);
+            return AllOpen(config + " (повторно)");
         }
 
         // Сайт считается рабочим, только если открылся во всех замерах; пинг - медиана средних по замерам
