@@ -61,7 +61,8 @@ namespace ZapretTray
         bool updating;
 
         ToolStripMenuItem statusItem, speedItem, uptimeItem, toggleItem, reselectItem, fastItem, bestItem, manualItem;
-        ToolStripMenuItem sitesItem, checkNowItem, settingsItem, themeItem, autoupdateItem, notifyItem, updateItem;
+        ToolStripMenuItem sitesItem, checkNowItem, reportItem, settingsItem, themeItem, autoupdateItem, notifyItem, updateItem, dnsFixItem, dnsUndoItem;
+        bool dnsBusy, dnsOffered, watchVpnLogged;
         ContextMenuStrip menu;
         ThemedRenderer renderer;
         Palette lastPalette;
@@ -97,6 +98,8 @@ namespace ZapretTray
         {
             ui.CreateControl();
             var h = ui.Handle;
+            Logger.File_ = Path.Combine(paths.Utils, "tray.log");
+            Logger.Write("запуск, версия " + AppInfo.Version);
             settings = new Settings(paths.Settings);
             games = new GameStore(paths);
 
@@ -185,7 +188,7 @@ namespace ZapretTray
             MenuKit.FixWidth(menu, MenuKit.MenuWidth);
 
             statusItem = Info("...", ItemKind.Status);
-            speedItem = Info("", ItemKind.Info);
+            speedItem = Info("", ItemKind.Stats);
             uptimeItem = Info("", ItemKind.Info);
 
             gamesItem = Item("Мои игры", null);
@@ -198,6 +201,9 @@ namespace ZapretTray
 
             sitesItem = Item("Мои сайты...", (s, e) => OpenSites());
             checkNowItem = Item("Проверить сейчас", (s, e) => CheckNow());
+            reportItem = Item("Что-то не работает", (s, e) => MakeReport());
+            dnsFixItem = Item("Исправить DNS", (s, e) => ApplyDnsFix());
+            dnsUndoItem = Item("Вернуть DNS как было", (s, e) => UndoDnsFix());
 
             // Настройки
             settingsItem = Item("Настройки", null);
@@ -218,6 +224,7 @@ namespace ZapretTray
             settingsItem.DropDownItems.AddRange(new ToolStripItem[] {
                 themeItem, MenuKit.Sep(),
                 watchdogItem, autostartItem, autoupdateItem, notifyItem, MenuKit.Sep(),
+                dnsFixItem, dnsUndoItem, MenuKit.Sep(),
                 updateItem,
                 Item("Открыть папку", (s, e) => Process.Start("explorer.exe", "\"" + paths.Root + "\"")),
                 Item("Удалить программу...", (s, e) => Uninstall())
@@ -228,13 +235,17 @@ namespace ZapretTray
             menu.Items.AddRange(new ToolStripItem[] {
                 statusItem, speedItem, uptimeItem, MenuKit.Sep(),
                 gamesItem, reselectItem,
-                sitesItem, checkNowItem, MenuKit.Sep(),
+                sitesItem, checkNowItem, reportItem, MenuKit.Sep(),
                 settingsItem, MenuKit.Sep(),
                 toggleItem,
                 Item("Выход", (s, e) => ExitApp())
             });
 
-            foreach (var sub in new[] { gamesItem, reselectItem, manualItem, settingsItem, themeItem }) MenuKit.SubMenu(sub);
+            MenuKit.SubMenu(gamesItem, MenuKit.GamesWidth);
+            MenuKit.SubMenu(reselectItem, MenuKit.ReselectWidth);
+            MenuKit.SubMenu(manualItem, MenuKit.ManualWidth);
+            MenuKit.SubMenu(settingsItem, MenuKit.SettingsWidth);
+            MenuKit.SubMenu(themeItem, MenuKit.ThemeWidth);
 
             menu.Opening += (s, e) => { ApplyTheme(); RefreshMenu(); };
             ApplyTheme();
@@ -280,6 +291,9 @@ namespace ZapretTray
             UpdateLabels();
             toggleItem.Text = wantOn ? "Выключить" : "Включить";
             fastItem.Enabled = bestItem.Enabled = manualItem.Enabled = !busy;
+            bool dnsApplied = DnsFix.IsApplied(paths);
+            dnsFixItem.Enabled = !dnsApplied && !dnsBusy;
+            dnsUndoItem.Enabled = dnsApplied && !dnsBusy;
             autostartItem.Checked = Tasks.IsEnabled(AppInfo.AutoTask);
             updateItem.Text = "Проверить обновления (сейчас " + AppInfo.Version + ", zapret " + ZapretUpdater.LocalVersion(paths) + ")";
             foreach (ToolStripMenuItem t in themeItem.DropDownItems) t.Checked = (string)t.Tag == Theme.Mode;
@@ -320,7 +334,7 @@ namespace ZapretTray
                 enable.Checked = game.Enabled;
                 item.DropDownItems.Add(enable);
                 item.DropDownItems.Add(Item("Удалить", (s, e) => RemoveGame(game)));
-                MenuKit.SubMenu(item);
+                MenuKit.SubMenu(item, MenuKit.GameWidth);
                 gamesItem.DropDownItems.Add(item);
             }
         }
@@ -370,11 +384,34 @@ namespace ZapretTray
             renderer.StatusColor = busy ? Theme.Busy : running ? Theme.On : Theme.Off;
             statusItem.Text = StatusText();
             // Строки всегда на месте (иначе меню прыгает по высоте) - когда показать нечего, пишем прочерк
-            speedItem.Text = speedText.Length > 0 ? speedText : "↓ —   ↑ —";
+            speedItem.Text = speedText.Length > 0 ? speedText : "↓ —\t↑ —\tпинг —";
             uptimeItem.Text = busy ? "подождите немного..." : running ? UptimeText() : "не запущен";
             if (menu.Visible) { statusItem.Invalidate(); speedItem.Invalidate(); uptimeItem.Invalidate(); }
-            var text = "zapret: " + StatusText() + (speedText.Length > 0 ? "\n" + speedText : "");
-            tray.Text = text.Length > 63 ? text.Substring(0, 63) : text;
+            // Подсказка Windows сама подгоняет ширину под самую длинную строку. Строка статуса длиннее строк с цифрами,
+            // поэтому от цифр подсказка не растягивается
+            var text = "zapret: " + StatusText();
+            if (running && !busy && speedText.Length > 0)
+            {
+                var stats = speedText.Split('\t');
+                text += "\n" + stats[0] + "   " + stats[1] + "\n" + stats[2];
+            }
+            SetTrayText(text);
+        }
+
+        // Свойство Text у значка не принимает больше 63 символов, а самой Windows хватает 127.
+        // Длинное имя конфига в 63 не влезает, поэтому пишем в обход проверки
+        void SetTrayText(string text)
+        {
+            if (text.Length > 127) text = text.Substring(0, 127);
+            try
+            {
+                var hidden = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                var type = typeof(NotifyIcon);
+                type.GetField("text", hidden).SetValue(tray, text);
+                if ((bool)type.GetField("added", hidden).GetValue(tray))
+                    type.GetMethod("UpdateIcon", hidden).Invoke(tray, new object[] { true });
+            }
+            catch { tray.Text = text.Length > 63 ? text.Substring(0, 63) : text; }
         }
 
         void UpdateSpeed()
@@ -397,8 +434,8 @@ namespace ZapretTray
             if (rxPrev >= 0)
             {
                 double sec = Math.Max(0.5, (now - speedAt).TotalSeconds);
-                speedText = "↓ " + FormatSpeed(Math.Max(0, rx - rxPrev) / sec) + "   ↑ " + FormatSpeed(Math.Max(0, tx - txPrev) / sec)
-                            + (pingMs >= 0 ? "   пинг " + pingMs + " мс" : "");
+                speedText = "↓ " + FormatSpeed(Math.Max(0, rx - rxPrev) / sec) + "\t↑ " + FormatSpeed(Math.Max(0, tx - txPrev) / sec)
+                            + "\tпинг " + (pingMs >= 0 ? pingMs + " мс" : "—");
             }
             rxPrev = rx;
             txPrev = tx;
@@ -507,6 +544,7 @@ namespace ZapretTray
 
             int gen = ++selectGen;
             bool best = mode == "best";
+            Logger.Write("подбор: старт, режим " + mode + (vpn != null ? ", запущен VPN " + vpn : ""));
             Task.Factory.StartNew(() =>
             {
                 string error = null;
@@ -573,23 +611,38 @@ namespace ZapretTray
         void WatchdogTick()
         {
             if (!wantOn || busy || checking || !watchdogItem.Checked) return;
+
+            // С VPN проверка показывает его сеть, а не работу zapret: ждём, ничего не трогаем
+            var vpn = Util.RunningVpn();
+            if (vpn != null)
+            {
+                if (!watchVpnLogged) Logger.Write("сторож: запущен VPN " + vpn + ", проверка на паузе");
+                watchVpnLogged = true;
+                watchFailedOnce = false;
+                watchTimer.Interval = WatchIntervalMs;
+                return;
+            }
+            watchVpnLogged = false;
+
             bool running = Util.WinwsRunning();
             checking = true;
             Task.Factory.StartNew(() =>
             {
                 if (!Util.InternetUp()) return 0;                 // нет интернета - не наша проблема
                 if (!running) return 2;                           // winws упал
-                var a = Task.Factory.StartNew(() => Util.HttpWorks("https://discord.com", 8000));
-                var b = Task.Factory.StartNew(() => Util.HttpWorks("https://www.youtube.com", 8000));
-                return a.Result && b.Result ? 0 : 1;
+                var res = SiteCheck.RunAll(new[] { "https://discord.com", "https://www.youtube.com" }, 8);
+                foreach (var x in res.Where(x => x.Status != SiteStatus.Ok)) Logger.Write("сторож: " + x.Url + ": " + x.Text);
+                if (res.Any(x => x.Status == SiteStatus.NoConnect)) return 1;   // только это чинится другим конфигом
+                return res.Any(x => x.DnsProblem) ? 3 : 0;
             }).ContinueWith(t => OnUi(() =>
             {
                 checking = false;
                 int r = t.Result;
-                if (r == 0)
+                if (r == 0 || r == 3)
                 {
                     watchFailedOnce = false;
                     watchTimer.Interval = WatchIntervalMs;
+                    if (r == 3) OfferDnsFix();
                 }
                 else if (r == 2 || watchFailedOnce)
                 {
@@ -859,21 +912,94 @@ namespace ZapretTray
             checkNowItem.Enabled = false;
             Task.Factory.StartNew(() =>
             {
-                var a = Task.Factory.StartNew(() => Util.HttpWorks("https://discord.com", 8000));
-                var b = Task.Factory.StartNew(() => Util.HttpWorks("https://www.youtube.com", 8000));
-                return Tuple.Create(a.Result, b.Result);
+                return SiteCheck.RunAll(new[] { "https://discord.com", "https://www.youtube.com" }, 8);
             }).ContinueWith(t => OnUi(() =>
             {
                 checkNowItem.Enabled = true;
-                bool d = t.Result.Item1, y = t.Result.Item2;
-                var text = "Discord " + (d ? "✓" : "✗") + "     YouTube " + (y ? "✓" : "✗");
-                if (d && y)
+                var res = t.Result;
+                foreach (var x in res) Logger.Write("проверка: " + x.Url + ": " + x.Text);
+                var text = "Discord " + (res[0].Opened ? "✓" : "✗") + "     YouTube " + (res[1].Opened ? "✓" : "✗");
+                var vpn = Util.RunningVpn();
+                if (vpn != null) text += "\nЗапущен VPN (" + vpn + "): проверка показывает его сеть.";
+
+                if (res.Any(x => x.Status == SiteStatus.NoConnect))
                 {
-                    Notify(text, ToolTipIcon.Info, true);
+                    // Не открывается - по клику сразу подбираем конфиг получше
+                    Offer(text + "\nНажми, чтобы подобрать конфиг получше.", () => { wantOn = true; RunSelect("fast", false, true); });
                     return;
                 }
-                // Не открывается - по клику сразу подбираем конфиг получше
-                Offer(text + "\nНажми, чтобы подобрать конфиг получше.", () => { wantOn = true; RunSelect("fast", false, true); });
+                if (res.Any(x => x.Status == SiteStatus.NoDns))
+                {
+                    Notify(text + "\nАдрес не находится: проблема с DNS, а не с zapret.", ToolTipIcon.Warning);
+                    return;
+                }
+                if (res.Any(x => x.DnsProblem) && !DnsFix.IsApplied(paths))
+                {
+                    Offer(text + "\nНо DNS Windows их не находит, другие программы могут не открыть. Нажми, чтобы исправить.", ApplyDnsFix);
+                    return;
+                }
+                Notify(text, ToolTipIcon.Info, true);
+            }));
+        }
+
+        // Само предлагает один раз за запуск: настройки сети меняем только по клику
+        void OfferDnsFix()
+        {
+            if (dnsOffered || DnsFix.IsApplied(paths)) return;
+            dnsOffered = true;
+            Offer("DNS Windows не находит YouTube, zapret тут ни при чём. Нажми, чтобы исправить.", ApplyDnsFix);
+        }
+
+        void ApplyDnsFix() { RunDnsAction(DnsFix.Apply); }
+
+        void UndoDnsFix() { RunDnsAction(DnsFix.Restore); }
+
+        delegate bool DnsAction(AppPaths paths, out string message);
+
+        void RunDnsAction(DnsAction action)
+        {
+            if (dnsBusy) return;
+            dnsBusy = true;
+            Task.Factory.StartNew(() =>
+            {
+                string message;
+                bool ok;
+                try { ok = action(paths, out message); }
+                catch (Exception ex) { ok = false; message = ex.Message; }
+                return Tuple.Create(ok, message);
+            }).ContinueWith(t => OnUi(() =>
+            {
+                dnsBusy = false;
+                Notify(t.Result.Item2, t.Result.Item1 ? ToolTipIcon.Info : ToolTipIcon.Warning, true);
+            }));
+        }
+
+        // Отчёт для пересылки: сразу в буфер обмена, копия - файлом на рабочем столе
+        void MakeReport()
+        {
+            reportItem.Enabled = false;
+            Notify("Проверяю всё и собираю отчёт, это до минуты...", ToolTipIcon.Info, true);
+            var status = StatusText();
+            Task.Factory.StartNew(() => ProblemReport.Build(paths, status)).ContinueWith(t => OnUi(() =>
+            {
+                reportItem.Enabled = true;
+                if (t.IsFaulted)
+                {
+                    Logger.Write("отчёт: " + t.Exception.InnerException.Message);
+                    Notify("Не удалось собрать отчёт: " + t.Exception.InnerException.Message, ToolTipIcon.Warning);
+                    return;
+                }
+                try
+                {
+                    Clipboard.SetText(t.Result);
+                    Notify("Отчёт скопирован. Вставь его в чат: Ctrl+V.", ToolTipIcon.Info, true);
+                }
+                catch (Exception ex)
+                {
+                    // Буфер бывает занят другой программой
+                    Logger.Write("отчёт: буфер обмена: " + ex.Message);
+                    Notify("Не удалось скопировать. Отчёт на рабочем столе: zapret-report.txt.", ToolTipIcon.Warning);
+                }
             }));
         }
 
@@ -967,15 +1093,16 @@ namespace ZapretTray
         }
 
         // Поток WinDivert: новое соединение какого-то процесса
-        void OnFlow(int pid, byte[] ip)
+        void OnFlow(int pid, byte[] ip, int port)
         {
             var exes = watchedExes;
-            if (exes.Count == 0 || !Util.IsPublic(ip)) return;
+            if (exes.Count == 0 || !Util.IsGameServer(ip, port)) return;
             var name = ProcessName(pid);
             if (name.Length == 0 || !exes.Contains(name)) return;
             var g = games.Find(name);
             if (g != null && games.AddSubnet(g, Util.Subnet24(ip)))
             {
+                Logger.Write("игра " + g.Exe + ": новый адрес, порт " + port);
                 lock (gamesLearnedThisSession) gamesLearnedThisSession.Add(g.Exe);
                 gamesDirty = true;
             }
@@ -987,9 +1114,9 @@ namespace ZapretTray
             {
                 var pids = new HashSet<int>(Process.GetProcessesByName(g.Exe).Select(p => p.Id));
                 if (pids.Count == 0) continue;
-                foreach (var ip in TcpTable.RemoteAddresses(pids))
+                foreach (var r in TcpTable.RemoteAddresses(pids))
                 {
-                    if (Util.IsPublic(ip) && games.AddSubnet(g, Util.Subnet24(ip))) gamesDirty = true;
+                    if (Util.IsGameServer(r.Item1, r.Item2) && games.AddSubnet(g, Util.Subnet24(r.Item1))) gamesDirty = true;
                 }
             }
         }
@@ -1106,6 +1233,7 @@ namespace ZapretTray
                 updating = false;
                 if (t.IsFaulted)
                 {
+                    Log("обновление " + rel.Version + ": " + t.Exception.InnerException.Message);
                     if (manual) Notify("Не удалось скачать обновление: " + t.Exception.InnerException.Message, ToolTipIcon.Warning);
                     return;
                 }
@@ -1125,7 +1253,7 @@ namespace ZapretTray
                 return;   // автоматически попробуем в следующий раз
             }
             updating = true;
-            Task.Factory.StartNew(() => ZapretUpdater.Prepare(rel)).ContinueWith(t => OnUi(() =>
+            Task.Factory.StartNew(() => ZapretUpdater.Prepare(rel, paths)).ContinueWith(t => OnUi(() =>
             {
                 updating = false;
                 if (t.IsFaulted)
@@ -1192,8 +1320,7 @@ namespace ZapretTray
 
         void Log(string text)
         {
-            try { File.AppendAllText(Path.Combine(paths.Utils, "tray.log"), DateTime.Now.ToString("yyyy-MM-dd HH:mm") + "  " + text + "\r\n"); }
-            catch { }
+            Logger.Write(text);
         }
 
         void ExitApp()
@@ -1250,6 +1377,7 @@ namespace ZapretTray
             using (var f = new Form())
             {
                 f.Text = "Добавить игру";
+                f.FormBorderStyle = FormBorderStyle.FixedDialog;
                 f.StartPosition = FormStartPosition.CenterScreen;
                 f.MinimizeBox = f.MaximizeBox = false;
                 f.TopMost = true;

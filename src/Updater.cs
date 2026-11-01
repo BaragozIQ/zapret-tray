@@ -5,16 +5,35 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 
 namespace ZapretTray
 {
     static class Updater
     {
+        // Открытая часть ключа подписи. Закрытая лежит только у владельца: %USERPROFILE%\.zapret-tray\signing-key.xml
+        const string PublicKey = "<RSAKeyValue><Modulus>wwgb3fVrm+BvlMWMB37VdDEDu5BX45eKHXQhvzGSmf9nuMgPr3cHuf7VQ4Ev1b1H1PT52pLaFxJPM2EIu1t9hpCekGrFsECiykREyWnTINq+LhcAil7xDCpe7O1xONgllyp+2l0FqT290nVo5ZqbWZALTggCTlqzryNFZaNwLF52kleWoKHL0wVIh3vDLx2AUfxHhpZiC807YwsZLg/eSaMfW7beOJVX35sEOUpxRG5oV6uGjJeakalFriRhe/jLekKwiM1RI8p576Qaou2UxgTHeNzdGOWdBYKVnrgmXzP36SHh9c4XPZdcXyvUNs4k3i3iDxEaYSkye4bEFNgkNboQIbpAoSPmxZmpPQyG/VmYQ8GBd5m2winLOGdK+SMrhZEUeIX8GLulqGQK30ZDsdD9boYGYbBDhLg5O2X6MdHUFqTsCuuRU3w0Lgmj702WiJPti46qN3oCs3GqsA7csuLJnHPWHeVeoGLcUV6gRD23LHEOcatxJ0Kleqme/ELJ</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>";
+
         public class Release
         {
             public string Version;
             public string ZipUrl;
+            public string SigUrl;
+        }
+
+        // Архив подписан владельцем и не изменён
+        public static bool SignatureValid(byte[] data, byte[] signature)
+        {
+            try
+            {
+                using (var rsa = new RSACryptoServiceProvider())
+                {
+                    rsa.FromXmlString(PublicKey);
+                    return rsa.VerifyData(data, "SHA256", signature);
+                }
+            }
+            catch { return false; }
         }
 
         // null - нет связи или релиза; иначе последний релиз (может быть и не новее нашего)
@@ -37,7 +56,8 @@ namespace ZapretTray
                     var tag = Regex.Match(json, "\"tag_name\"\\s*:\\s*\"v?([^\"]+)\"");
                     var zip = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+\\.zip)\"");
                     if (!tag.Success || !zip.Success) return null;
-                    return new Release { Version = tag.Groups[1].Value, ZipUrl = zip.Groups[1].Value };
+                    var sig = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+\\.zip\\.sig)\"");
+                    return new Release { Version = tag.Groups[1].Value, ZipUrl = zip.Groups[1].Value, SigUrl = sig.Success ? sig.Groups[1].Value : null };
                 }
             }
             catch { return null; }
@@ -53,14 +73,16 @@ namespace ZapretTray
         // Скачать и распаковать релиз, вернуть путь к Setup.exe из него
         public static string Download(Release rel)
         {
-            var outDir = DownloadAndExtract(rel.ZipUrl, "ZapretTrayUpdate");
+            // Этот Setup.exe запустится с правами администратора: без верной подписи не ставим
+            if (rel.SigUrl == null) throw new Exception("у обновления нет подписи");
+            var outDir = DownloadAndExtract(rel.ZipUrl, "ZapretTrayUpdate", rel.SigUrl);
             var setup = Directory.GetFiles(outDir, AppInfo.SetupExe, SearchOption.AllDirectories).FirstOrDefault();
             if (setup == null) throw new Exception("в архиве обновления нет " + AppInfo.SetupExe);
             return setup;
         }
 
         // Скачать zip во временную папку и распаковать, вернуть папку с содержимым
-        public static string DownloadAndExtract(string url, string dirName)
+        public static string DownloadAndExtract(string url, string dirName, string sigUrl = null)
         {
             var dir = Path.Combine(Path.GetTempPath(), dirName);
             if (Directory.Exists(dir)) Directory.Delete(dir, true);
@@ -71,6 +93,11 @@ namespace ZapretTray
             {
                 wc.Headers[HttpRequestHeader.UserAgent] = "ZapretTray/" + AppInfo.Version;
                 wc.DownloadFile(url, zipPath);
+                if (sigUrl != null && !SignatureValid(File.ReadAllBytes(zipPath), wc.DownloadData(sigUrl)))
+                {
+                    Directory.Delete(dir, true);
+                    throw new Exception("подпись обновления не совпала, не ставлю");
+                }
             }
             var outDir = Path.Combine(dir, "x");
             ZipFile.ExtractToDirectory(zipPath, outDir);
@@ -107,8 +134,31 @@ namespace ZapretTray
             catch { return "0"; }
         }
 
-        // Скачать и подготовить: вернуть папку с уже поправленными файлами. Бросает исключение, если что-то не так
-        public static string Prepare(Updater.Release rel)
+        // Чужой архив не подписан нами, а конфиги запускаются с правами администратора. Поэтому в конфиге разрешён только запуск
+        // winws из папки bin с его параметрами: ничего другого он выполнить не сможет. Проверять после правки /min -> /b
+        static readonly Regex[] AllowedLines =
+        {
+            new Regex(@"^\s*$"),
+            new Regex(@"^@echo off\s*$", RegexOptions.IgnoreCase),
+            new Regex(@"^chcp \d+( > ?nul)?\s*$", RegexOptions.IgnoreCase),
+            new Regex(@"^::[^&|<>]*$"),
+            new Regex(@"^echo:\s*$", RegexOptions.IgnoreCase),
+            new Regex(@"^cd /d (""%~dp0""|%BIN%)\s*$", RegexOptions.IgnoreCase),
+            new Regex(@"^call service\.bat \w+\s*$", RegexOptions.IgnoreCase),
+            new Regex(@"^set ""(BIN=%~dp0bin\\|LISTS=%~dp0lists\\)""\s*$", RegexOptions.IgnoreCase),
+            new Regex(@"^start ""zapret: %~n0"" /b ""%BIN%winws\.exe""( --[^&|<>`]*)?\^?\s*$", RegexOptions.IgnoreCase),
+            new Regex(@"^--[^&|<>`]*\^?\s*$"),
+        };
+
+        // Первая строка, которой в конфиге быть не должно, или null
+        public static string UnsafeLine(string bat)
+        {
+            return bat.Replace("\r\n", "\n").Split('\n').FirstOrDefault(l => !AllowedLines.Any(r => r.IsMatch(l)));
+        }
+
+        // Скачать и подготовить: вернуть папку с уже поправленными файлами. Бросает исключение, если что-то не так.
+        // Берём только конфиги, списки и .bin. Движок (winws, WinDivert) и код service.bat приходят лишь в наших подписанных релизах
+        public static string Prepare(Updater.Release rel, AppPaths paths)
         {
             var outDir = Updater.DownloadAndExtract(rel.ZipUrl, "ZapretCoreUpdate");
             var root = Directory.GetFiles(outDir, "service.bat", SearchOption.AllDirectories)
@@ -124,6 +174,8 @@ namespace ZapretTray
                 var text = File.ReadAllText(bat, Raw);
                 var patched = Regex.Replace(text, "(start\\s+\"[^\"]*\"\\s+)/min(\\s)", "$1/b$2", RegexOptions.IgnoreCase);
                 if (patched == text) throw new Exception("не понял устройство конфига " + Path.GetFileName(bat));
+                var bad = UnsafeLine(patched);
+                if (bad != null) throw new Exception("в конфиге " + Path.GetFileName(bat) + " лишняя команда: " + bad);
                 File.WriteAllText(bat, patched, Raw);
             }
 
@@ -134,53 +186,19 @@ namespace ZapretTray
                     if (!Commands.Contains(m.Groups[1].Value.ToLowerInvariant()))
                         throw new Exception("конфиг " + Path.GetFileName(bat) + " зовёт неизвестную команду service.bat " + m.Groups[1].Value);
             }
+            // service.bat - наш: из чужого берём только номер версии
             var service = Path.Combine(root, "service.bat");
-            File.WriteAllText(service, SlimService(File.ReadAllText(service, Raw)), Raw);
+            var version = Regex.Match(File.ReadAllText(service, Raw), "LOCAL_VERSION=([0-9.]+)");
+            if (!version.Success) throw new Exception("в service.bat нет LOCAL_VERSION");
+            File.WriteAllText(service, Regex.Replace(File.ReadAllText(paths.ServiceBat, Raw), "LOCAL_VERSION=[0-9.]+", "LOCAL_VERSION=" + version.Groups[1].Value), Raw);
+
+            foreach (var f in Directory.GetFiles(Path.Combine(root, "bin")))
+                if (!f.EndsWith(".bin", StringComparison.OrdinalIgnoreCase)) File.Delete(f);
             return root;
         }
 
         // Команды service.bat, которые вызывают конфиги general*.bat
         static readonly string[] Commands = { "status_zapret", "check_updates", "load_game_filter", "load_user_lists" };
-        // Функции, которые для них нужны
-        static readonly string[] Functions = { "load_user_lists", "tcp_enable", "game_switch_status", "validate_game_filter_range", "gf_validate_item" };
-
-        // Из полного service.bat (меню, службы, правка hosts, скачивание, диагностика) оставляем только то, что зовут конфиги.
-        // Лишнее не нужно программе и пугает антивирусы (Trojan:Script/Wacatac!ml)
-        public static string SlimService(string full)
-        {
-            var version = Regex.Match(full, "LOCAL_VERSION=([0-9.]+)");
-            if (!version.Success) throw new Exception("в service.bat нет LOCAL_VERSION");
-            var lines = full.Replace("\r\n", "\n").Split('\n');
-
-            var sb = new System.Text.StringBuilder();
-            sb.Append("@echo off\r\n");
-            sb.Append("set \"LOCAL_VERSION=" + version.Groups[1].Value + "\"\r\n");
-            sb.Append(":: Zapret Tray: only what general*.bat configs call. Menu, services, hosts editing and downloads are removed.\r\n\r\n");
-            sb.Append("if \"%~1\"==\"status_zapret\" (\r\n    call :tcp_enable\r\n    exit /b\r\n)\r\n");
-            sb.Append("if \"%~1\"==\"check_updates\" exit /b\r\n");
-            sb.Append("if \"%~1\"==\"load_game_filter\" (\r\n    call :game_switch_status\r\n    exit /b\r\n)\r\n");
-            sb.Append("if \"%~1\"==\"load_user_lists\" (\r\n    call :load_user_lists\r\n    exit /b\r\n)\r\n");
-            sb.Append("exit /b\r\n");
-
-            foreach (var name in Functions)
-            {
-                // Функция: от строки ":имя" до первого "exit /b" в начале строки
-                int start = Array.FindIndex(lines, l => l.TrimEnd() == ":" + name);
-                if (start < 0) throw new Exception("в service.bat нет функции " + name);
-                int end = Array.FindIndex(lines, start + 1, l => l.TrimEnd() == "exit /b");
-                if (end < 0) throw new Exception("не нашёл конец функции " + name);
-                var body = lines.Skip(start).Take(end - start + 1).ToArray();
-                foreach (var l in body)
-                {
-                    var call = Regex.Match(l, @"call\s+:(\w+)");
-                    if (call.Success && !Functions.Contains(call.Groups[1].Value)) throw new Exception(name + " зовёт " + call.Groups[1].Value + ", её нет в урезанной версии");
-                }
-                sb.Append("\r\n\r\n");
-                sb.Append(string.Join("\r\n", body));
-            }
-            sb.Append("\r\n");
-            return sb.ToString();
-        }
 
         // Заменить файлы, старые сложить в core_backup
         public static void Apply(AppPaths paths, string src)

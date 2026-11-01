@@ -31,7 +31,12 @@ namespace ZapretTray
             {
                 var parts = line.Split('|');
                 var g = new Game { Exe = parts[0], Enabled = parts.Length < 2 || parts[1] == "1" };
-                foreach (var s in Util.ReadEntries(GameFile(g.Exe))) g.Subnets.Add(s);
+                // Мусор, собранный прошлыми версиями, не берём
+                foreach (var s in Util.ReadEntries(GameFile(g.Exe)))
+                {
+                    var ip = Util.ParseSubnet(s);
+                    if (ip == null || !Util.InNotGameNetwork(ip)) g.Subnets.Add(s);
+                }
                 Games.Add(g);
             }
         }
@@ -127,8 +132,8 @@ namespace ZapretTray
 
         static readonly IntPtr InvalidHandle = new IntPtr(-1);
 
-        // pid и удалённый IPv4 (байты по порядку a.b.c.d)
-        public event Action<int, byte[]> FlowSeen;
+        // pid, удалённый IPv4 (байты по порядку a.b.c.d) и порт
+        public event Action<int, byte[], int> FlowSeen;
 
         IntPtr handle = InvalidHandle;
         Thread thread;
@@ -179,8 +184,9 @@ namespace ZapretTray
                     // IPv4 хранится как IPv4-mapped IPv6, первое слово - адрес в порядке хоста
                     uint a = (uint)Marshal.ReadInt32(addr, 52);
                     var bytes = new[] { (byte)(a >> 24), (byte)(a >> 16), (byte)(a >> 8), (byte)a };
+                    int port = (ushort)Marshal.ReadInt16(addr, 70);
                     var handler = FlowSeen;
-                    if (handler != null) handler(pid, bytes);
+                    if (handler != null) handler(pid, bytes, port);
                 }
             }
             catch { }
@@ -194,9 +200,10 @@ namespace ZapretTray
         [DllImport("iphlpapi.dll", SetLastError = true)]
         static extern uint GetExtendedTcpTable(IntPtr table, ref int size, bool order, int af, int tableClass, uint reserved);
 
-        public static List<byte[]> RemoteAddresses(HashSet<int> pids)
+        // Адрес и порт сервера
+        public static List<Tuple<byte[], int>> RemoteAddresses(HashSet<int> pids)
         {
-            var result = new List<byte[]>();
+            var result = new List<Tuple<byte[], int>>();
             int size = 0;
             GetExtendedTcpTable(IntPtr.Zero, ref size, false, 2, 5, 0);
             var buf = Marshal.AllocHGlobal(size);
@@ -210,7 +217,9 @@ namespace ZapretTray
                     var row = buf + 4 + i * 24;
                     int pid = Marshal.ReadInt32(row, 20);
                     if (!pids.Contains(pid)) continue;
-                    result.Add(BitConverter.GetBytes(Marshal.ReadInt32(row, 12)));
+                    // Порт в таблице в сетевом порядке байт
+                    int port = (Marshal.ReadByte(row, 16) << 8) | Marshal.ReadByte(row, 17);
+                    result.Add(Tuple.Create(BitConverter.GetBytes(Marshal.ReadInt32(row, 12)), port));
                 }
             }
             finally { Marshal.FreeHGlobal(buf); }

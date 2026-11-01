@@ -13,8 +13,7 @@ namespace ZapretTray
 {
     static class Selector
     {
-        // Полный GET (а не HEAD), чтобы ловить и "заморозку" на 16-20 КБ
-        static readonly string[] Targets =
+        public static readonly string[] Targets =
         {
             "https://discord.com", "https://gateway.discord.gg", "https://cdn.discordapp.com", "https://updates.discord.com",
             "https://www.youtube.com", "https://i.ytimg.com", "https://redirector.googlevideo.com", "https://www.google.com",
@@ -31,15 +30,13 @@ namespace ZapretTray
             public double Time;
         }
 
-        static string Curl { get { return Path.Combine(Environment.SystemDirectory, "curl.exe"); } }
-
         // best=false: прошлый удачный конфиг, иначе первый, где всё работает.
         // best=true: все конфиги по 3 раза, берём тот, где всё работает с минимальным пингом.
         // cancelled() - выключили посреди подбора. progress - текст для подсказки у значка
         public static bool Run(AppPaths paths, bool best, Func<bool> cancelled, Action<string> progress, out string error)
         {
             error = null;
-            if (!File.Exists(Curl)) { error = "не найден curl.exe (нужна Windows 10 1803 или новее)"; return false; }
+            if (!SiteCheck.Available) { error = "не найден curl.exe (нужна Windows 10 1803 или новее)"; return false; }
 
             var bats = Directory.GetFiles(paths.Core, "general*.bat")
                 .OrderBy(f => Regex.Replace(Path.GetFileName(f), @"\d+", m => m.Value.PadLeft(8, '0')))
@@ -59,7 +56,7 @@ namespace ZapretTray
                     progress("Проверяю " + Path.GetFileNameWithoutExtension(file) + "...");
                     StopZapret();
                     StartConfig(paths, file);
-                    if (WaitWinwsReady() && Check().Count(r => r.Item1) == Targets.Length)
+                    if (WaitWinwsReady() && Check(name).Count(r => r.Item1) == Targets.Length)
                     {
                         // Рабочий - наверх списка, остальные запомненные за ним
                         Util.WriteLinesAtomic(paths.BestConfig, new[] { name }.Concat(saved.Where(n => n != name)));
@@ -80,7 +77,7 @@ namespace ZapretTray
                 StartConfig(paths, file);
                 if (!WaitWinwsReady()) continue;
 
-                var m = Measure(rounds);
+                var m = Measure(rounds, Path.GetFileName(file));
                 m.File = file;
                 scores.Add(m);
                 if (!best && m.Ok == Targets.Length) break;   // быстрый режим: первый, где всё работает
@@ -93,6 +90,7 @@ namespace ZapretTray
             // Больше рабочих сайтов - лучше; при равенстве - меньше пинг
             var top = scores.OrderByDescending(s => s.Ok).ThenBy(s => s.Time).ToList();
             var winner = top[0];
+            Logger.Write("подбор: выбран " + Path.GetFileName(winner.File) + ", открылось " + winner.Ok + " из " + Targets.Length);
             if (winner.Ok == 0) { error = "ни один сайт не открылся ни на одном конфиге - похоже, нет интернета"; return false; }
 
             // Запоминаем до 3 полностью рабочих конфигов (или хотя бы лучший) - запасные для быстрого режима
@@ -137,48 +135,23 @@ namespace ZapretTray
         }
 
         // Все сайты параллельно. Время = TLS-рукопожатие в мс: тут DPI и тормозит, поэтому это и считаем "пингом"
-        static List<Tuple<bool, double>> Check()
+        static List<Tuple<bool, double>> Check(string config)
         {
-            var procs = new List<Process>();
-            foreach (var url in Targets)
-            {
-                var psi = new ProcessStartInfo(Curl,
-                    "-s -o NUL -m " + CurlTimeout + " --connect-timeout 3 -w \"%{http_code} %{time_connect} %{time_appconnect}\" \"" + url + "\"")
-                {
-                    UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true
-                };
-                try { procs.Add(Process.Start(psi)); } catch { procs.Add(null); }
-            }
-
-            var results = new List<Tuple<bool, double>>();
-            foreach (var p in procs)
-            {
-                if (p == null) { results.Add(Tuple.Create(false, 0.0)); continue; }
-                using (p)
-                {
-                    var parts = p.StandardOutput.ReadToEnd().Trim().Split(' ');
-                    p.WaitForExit();
-                    double connect = 0, app = 0;
-                    if (parts.Length > 2)
-                    {
-                        double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out connect);
-                        double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out app);
-                    }
-                    bool ok = p.ExitCode == 0 && parts.Length > 0 && parts[0] != "000";
-                    results.Add(Tuple.Create(ok, Math.Max(0, (app - connect) * 1000)));
-                }
-            }
-            return results;
+            var results = SiteCheck.RunAll(Targets, CurlTimeout);
+            var failed = results.Where(r => !r.Opened).Select(r => r.Url.Replace("https://", "") + ": " + r.Text).ToList();
+            Logger.Write("подбор: " + config + ": открылось " + (results.Count - failed.Count) + " из " + results.Count
+                         + (failed.Count > 0 ? " (" + string.Join("; ", failed) + ")" : ""));
+            return results.Select(r => Tuple.Create(r.Opened, r.TlsMs)).ToList();
         }
 
         // Сайт считается рабочим, только если открылся во всех замерах; пинг - медиана средних по замерам
-        static Score Measure(int rounds)
+        static Score Measure(int rounds, string config)
         {
             var okCounts = new List<int>();
             var avgs = new List<double>();
             for (int r = 0; r < rounds; r++)
             {
-                var res = Check().Where(x => x.Item1).ToList();
+                var res = Check(config).Where(x => x.Item1).ToList();
                 okCounts.Add(res.Count);
                 avgs.Add(res.Count > 0 ? res.Average(x => x.Item2) : 0);
             }

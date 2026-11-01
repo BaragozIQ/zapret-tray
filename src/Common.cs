@@ -17,7 +17,7 @@ namespace ZapretTray
     static class AppInfo
     {
         public const string Name = "Zapret Tray";
-        public const string Version = "0.2";
+        public const string Version = "0.3";
         public const string RunTask = "ZapretTray";
         public const string AutoTask = "ZapretTray Autostart";
         public const string TrayExe = "ZapretTray.exe";
@@ -226,19 +226,87 @@ namespace ZapretTray
             return true;
         }
 
+        static readonly int[] WebPorts = { 53, 80, 443, 853 };
+
+        // Сети, где точно нет серверов игр: публичные DNS, Cloudflare, Fastly. Адрес и маска в битах
+        static readonly Tuple<byte[], int>[] NotGameNetworks =
+        {
+            Net(8, 8, 8, 0, 24), Net(8, 8, 4, 0, 24), Net(1, 1, 1, 0, 24), Net(1, 0, 0, 0, 24), Net(9, 9, 9, 0, 24),
+            Net(104, 16, 0, 0, 12), Net(172, 64, 0, 0, 13), Net(146, 75, 0, 0, 16), Net(151, 101, 0, 0, 16),
+        };
+
+        static Tuple<byte[], int> Net(byte a, byte b, byte c, byte d, int bits)
+        {
+            return Tuple.Create(new[] { a, b, c, d }, bits);
+        }
+
+        public static bool InNotGameNetwork(byte[] ip)
+        {
+            foreach (var n in NotGameNetworks)
+            {
+                uint mask = uint.MaxValue << (32 - n.Item2);
+                if ((ToUInt(ip) & mask) == (ToUInt(n.Item1) & mask)) return true;
+            }
+            return false;
+        }
+
+        static uint ToUInt(byte[] b)
+        {
+            return ((uint)b[0] << 24) | ((uint)b[1] << 16) | ((uint)b[2] << 8) | b[3];
+        }
+
+        // Похоже ли соединение игры на её сервер: сайты, API и DNS не берём
+        public static bool IsGameServer(byte[] ip, int port)
+        {
+            return IsPublic(ip) && !WebPorts.Contains(port) && !InNotGameNetwork(ip);
+        }
+
+        // "1.2.3.0/24" в байты адреса, null - не такой формат
+        public static byte[] ParseSubnet(string subnet)
+        {
+            var m = Regex.Match(subnet, @"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/\d+$");
+            if (!m.Success) return null;
+            var b = new byte[4];
+            for (int i = 0; i < 4; i++)
+                if (!byte.TryParse(m.Groups[i + 1].Value, out b[i])) return null;
+            return b;
+        }
+
         static readonly string[] VpnProcesses = {
             "verge-mihomo", "mihomo", "clash", "clash-verge", "clash-meta", "sing-box", "xray", "v2ray",
             "nekoray", "nekobox", "hiddify", "happ", "outline", "amneziavpn", "openvpn", "wireguard"
         };
 
-        // Имя запущенного VPN-клиента или null: с ним подбор и сбор адресов игр врут
+        // Имя VPN-клиента, через который сейчас идёт трафик, или null: с ним подбор и сбор адресов игр врут.
+        // Просто запущенный клиент не считается: Clash часто висит включённым, а трафик идёт напрямую
         public static string RunningVpn()
         {
             foreach (var name in VpnProcesses)
             {
-                if (Process.GetProcessesByName(name).Length > 0) return name;
+                if (Process.GetProcessesByName(name).Length > 0) return VpnCarriesTraffic() ? name : null;
             }
             return null;
+        }
+
+        // Поднят адаптер VPN (режим TUN) или включён системный прокси
+        static bool VpnCarriesTraffic()
+        {
+            try
+            {
+                foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                    if (ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback) continue;
+                    if (Regex.IsMatch(ni.Name + " " + ni.Description, @"tunnel|\btap\b|\btun\b|wintun|wireguard|\bmeta\b|outline|amnezia", RegexOptions.IgnoreCase)) return true;
+                }
+                using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Internet Settings"))
+                {
+                    var proxy = k == null ? null : k.GetValue("ProxyEnable");
+                    if (proxy is int && (int)proxy != 0) return true;
+                }
+                return false;
+            }
+            catch { return true; }   // не смогли понять - считаем, что VPN работает: так ничего не сломаем
         }
 
         // GET страницы целиком; true - сервер ответил (любым HTTP-кодом)
@@ -272,6 +340,45 @@ namespace ZapretTray
         public static bool InternetUp()
         {
             return HttpWorks("http://www.msftconnecttest.com/connecttest.txt", 6000);
+        }
+    }
+
+    // Журнал utils\tray.log. Адреса и имена посещённых сайтов сюда не пишем
+    static class Logger
+    {
+        const long MaxBytes = 512 * 1024;
+        static readonly object sync = new object();
+
+        public static string File_;
+
+        public static void Write(string text)
+        {
+            if (File_ == null) return;
+            lock (sync)
+            {
+                try
+                {
+                    // Большой журнал - в .old, чтобы не рос бесконечно
+                    if (File.Exists(File_) && new FileInfo(File_).Length > MaxBytes) File.Copy(File_, File_ + ".old", true);
+                    if (File.Exists(File_) && new FileInfo(File_).Length > MaxBytes) File.Delete(File_);
+                    File.AppendAllText(File_, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + text + "\r\n");
+                }
+                catch { }
+            }
+        }
+
+        public static List<string> Tail(int count)
+        {
+            lock (sync)
+            {
+                try
+                {
+                    if (File_ == null || !File.Exists(File_)) return new List<string>();
+                    var lines = File.ReadAllLines(File_);
+                    return lines.Skip(Math.Max(0, lines.Length - count)).ToList();
+                }
+                catch { return new List<string>(); }
+            }
         }
     }
 
@@ -420,7 +527,9 @@ namespace ZapretTray
             var baseSet = new HashSet<string>(baseList, StringComparer.OrdinalIgnoreCase);
             var added = wanted.Distinct(StringComparer.OrdinalIgnoreCase).Where(w => !baseSet.Contains(w)).ToList();
 
-            if (added.Count == prevAdded.Count && added.All(prevAdded.Contains)) return true;
+            // Смотрим и в сам список: переустановка заменяет его чистым, а заметка prevAdded остаётся
+            var currentSet = new HashSet<string>(current, StringComparer.OrdinalIgnoreCase);
+            if (added.Count == prevAdded.Count && added.All(a => prevAdded.Contains(a) && currentSet.Contains(a))) return true;
 
             Util.WriteLinesAtomic(paths.IpsetAll, baseList.Concat(added));
             Util.WriteLinesAtomic(paths.IpsetAdded, added);

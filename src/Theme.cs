@@ -75,13 +75,13 @@ namespace ZapretTray
             catch { }
         }
 
-        // Windows 11: скруглённые углы и тень у выпадающего меню (на Windows 10 просто ничего не произойдёт)
-        public static void RoundCorners(ToolStripDropDown dd)
+        // Windows 11: скруглённые углы и тень у выпадающего меню и окон без рамки (на Windows 10 просто ничего не произойдёт)
+        public static void RoundCorners(Control c)
         {
             try
             {
                 int round = 2;   // DWMWCP_ROUND
-                DwmSetWindowAttribute(dd.Handle, 33, ref round, sizeof(int));
+                DwmSetWindowAttribute(c.Handle, 33, ref round, sizeof(int));
             }
             catch { }
         }
@@ -92,6 +92,7 @@ namespace ZapretTray
     {
         public const string Status = "status";   // первая строка статуса с цветной точкой
         public const string Info = "info";       // серые строки под статусом
+        public const string Stats = "stats";     // серая строка с колонками: части текста разделены \t
     }
 
     // Сетка меню. Весь текст во всех меню начинается с одной линии (Left). По бокам отступ вдвое больше вертикального.
@@ -108,8 +109,10 @@ namespace ZapretTray
         public static readonly Font Font = new Font("Segoe UI", 9.75f);
         public static readonly Font Bold = new Font("Segoe UI Semibold", 9.75f);
 
-        // Отступы нужны WinForms только для расчёта размеров: справа - место под галочку/стрелку
-        static readonly Padding ItemPad = new Padding(Left, V, Left + Mark, V);
+        // Отступы нужны WinForms только для расчёта размеров. Пункт рисуется в буфер своего размера, и всё, что за ним, пропадает.
+        // Ширина пункта зависит от текста, поэтому справа отступ больше любого меню: пункт всегда шире окна, а видимую ширину берём от окна
+        const int Stretch = 400;
+        static readonly Padding ItemPad = new Padding(Left, V, Stretch, V);
 
         public static ToolStripMenuItem Item(string text, EventHandler click)
         {
@@ -123,13 +126,16 @@ namespace ZapretTray
         {
             var item = new ToolStripMenuItem(text) { Enabled = false, Tag = kind };
             if (kind == ItemKind.Status) item.Font = Bold;
-            item.Padding = kind == ItemKind.Status ? new Padding(Left, V, Left + Mark, 1) : new Padding(Left, 0, Left + Mark, 1);
+            item.Padding = kind == ItemKind.Status ? new Padding(Left, V, Stretch, 1) : new Padding(Left, 0, Stretch, 1);
             return item;
         }
 
         // Постоянная ширина главного меню: строки статуса всё время меняются, и без этого меню прыгает.
         // Длинный текст обрезается многоточием (ThemedRenderer рисует с EndEllipsis)
-        public const int MenuWidth = 300;
+        public const int MenuWidth = 320;
+
+        // Постоянная ширина подменю: подобрана под самый длинный текст, с запасом на отступы (Left * 2 + Mark)
+        public const int ThemeWidth = 160, GameWidth = 130, ReselectWidth = 220, ManualWidth = 240, SettingsWidth = 360, GamesWidth = 370;
 
         public static void FixWidth(ToolStripDropDown dd, int width)
         {
@@ -153,10 +159,11 @@ namespace ZapretTray
 
         // Подменю настраиваем один раз при создании: если менять размеры перед открытием,
         // Windows уже посчитала место, и подменю съезжает. После открытия придвигаем вплотную к родителю
-        public static void SubMenu(ToolStripMenuItem item)
+        public static void SubMenu(ToolStripMenuItem item, int width)
         {
             var dd = (ToolStripDropDownMenu)item.DropDown;
             Menu(dd);
+            FixWidth(dd, width);
             // Windows ставит подменю уже после Opened - поправляем следующим сообщением окна
             dd.Opened += (s, e) => { Snap(item, dd); dd.BeginInvoke((Action)(() => Snap(item, dd))); };
         }
@@ -269,11 +276,20 @@ namespace ZapretTray
         {
             var kind = e.Item.Tag as string;
             var font = kind == ItemKind.Status ? MenuKit.Bold : MenuKit.Font;
-            var color = kind == ItemKind.Status ? P.Text : kind == ItemKind.Info ? P.SubText : e.Item.Enabled ? P.Text : P.Disabled;
+            var color = kind == ItemKind.Status ? P.Text : kind == ItemKind.Info || kind == ItemKind.Stats ? P.SubText : e.Item.Enabled ? P.Text : P.Disabled;
             var pad = e.Item.Padding;
             var r = new Rectangle(MenuKit.Left, pad.Top, W(e.Item) - MenuKit.Left * 2 - MenuKit.Mark, e.Item.Height - pad.Top - pad.Bottom);
-            TextRenderer.DrawText(e.Graphics, e.Text, font, r, color,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+            var flags = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine;
+            if (kind == ItemKind.Stats)
+            {
+                // Колонки стоят на месте, что бы ни показывали цифры
+                var parts = e.Text.Split('\t');
+                int col = r.Width / parts.Length;
+                for (int i = 0; i < parts.Length; i++)
+                    TextRenderer.DrawText(e.Graphics, parts[i], font, new Rectangle(r.Left + col * i, r.Top, col, r.Height), color, flags);
+            }
+            else
+                TextRenderer.DrawText(e.Graphics, e.Text, font, r, color, flags);
             var mi = e.Item as ToolStripMenuItem;
             if (mi != null) DrawMark(e.Graphics, mi);
         }
@@ -288,14 +304,14 @@ namespace ZapretTray
             // Галочку рисуем сами в OnRenderMenuItemBackground
         }
 
-        // Видимая ширина пункта: WinForms делает пункты шире окна меню, правый край уходит за границу
+        // Видимая ширина пункта: WinForms меняет ширину пунктов вслед за текстом, поэтому считаем только от окна меню
         static int W(ToolStripItem item)
         {
             var o = item.Owner;
-            return o == null ? item.Width : Math.Min(item.Width, o.Width - 2 * item.Bounds.Left);
+            return o == null ? item.Width : o.Width - 2 * item.Bounds.Left;
         }
 
-        static GraphicsPath RoundRect(Rectangle r, int radius)
+        public static GraphicsPath RoundRect(Rectangle r, int radius)
         {
             int d = radius * 2;
             var path = new GraphicsPath();

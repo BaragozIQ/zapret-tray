@@ -15,8 +15,8 @@ set "VER=%VER:"=%"
 if not exist dist mkdir dist
 powershell -NoProfile -ExecutionPolicy Bypass -File src\make-icon.ps1 -Out src\app.ico || goto :fail
 
-"%CSC%" %OPTS% /win32manifest:src\tray.manifest /out:dist\ZapretTray.exe src\Common.cs src\Games.cs src\Updater.cs src\Theme.cs src\Selector.cs src\Tray.cs || goto :fail
-"%CSC%" %OPTS% /win32manifest:src\setup.manifest /out:dist\Setup.exe src\Common.cs src\Setup.cs || goto :fail
+"%CSC%" %OPTS% /win32manifest:src\tray.manifest /out:dist\ZapretTray.exe src\Common.cs src\DnsFix.cs src\SiteCheck.cs src\Games.cs src\Updater.cs src\Theme.cs src\Selector.cs src\Tray.cs || goto :fail
+"%CSC%" %OPTS% /win32manifest:src\setup.manifest /out:dist\Setup.exe src\Common.cs src\DnsFix.cs src\Theme.cs src\Setup.cs || goto :fail
 
 robocopy payload\core dist\core /MIR /NFL /NDL /NJH /NJS /NP >nul
 if %errorlevel% geq 8 goto :fail
@@ -31,6 +31,15 @@ copy /y dist\ZapretTray.exe "%REL%\files\" >nul || goto :fail
 robocopy dist\core "%REL%\files\core" /E /NFL /NDL /NJH /NJS /NP >nul
 if %errorlevel% geq 8 goto :fail
 powershell -NoProfile -Command "Compress-Archive -Path '%REL%\*' -DestinationPath 'release\ZapretTray-%VER%.zip' -Force" || goto :fail
+
+:: Подпись архива. Без неё программа обновление не поставит. Ключ лежит только у владельца и в репозиторий не попадает
+set "KEY=%USERPROFILE%\.zapret-tray\signing-key.xml"
+if not exist "%KEY%" (
+    echo No signing key: %KEY%
+    goto :fail
+)
+"%CSC%" /nologo /codepage:65001 /out:release\zsign.exe src\SignTool.cs || goto :fail
+release\zsign.exe sign "%KEY%" "release\ZapretTray-%VER%.zip" || goto :fail
 
 echo Build OK: %~dp0dist
 echo Release: %~dp0release\ZapretTray-%VER%.zip
