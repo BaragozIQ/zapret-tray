@@ -17,7 +17,7 @@ namespace ZapretTray
     static class AppInfo
     {
         public const string Name = "Zapret Tray";
-        public const string Version = "0.5";
+        public const string Version = "0.6";
         public const string RunTask = "ZapretTray";
         public const string AutoTask = "ZapretTray Autostart";
         public const string TrayExe = "ZapretTray.exe";

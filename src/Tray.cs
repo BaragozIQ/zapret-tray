@@ -80,6 +80,9 @@ namespace ZapretTray
         DateTime gamePingAt = DateTime.MinValue;
         DateTime healthNotBefore = DateTime.MinValue;
         bool healthProblem, healthVpn, healthChecking;
+        readonly bool[] tileChecking = new bool[4];   // какая плитка на главной проверяется по нажатию
+        int waitGen;                                  // ожидание интернета или конца подбора: новое нажатие отменяет старое
+        readonly bool[] tilePending = new bool[4];    // список поменялся, пока шла другая проверка: проверить, когда она закончится
         int healthGen, healthSites, healthGames;
         DateTime healthAt = DateTime.MinValue;
 
@@ -221,8 +224,8 @@ namespace ZapretTray
 
             gamesItem = MenuKit.Icon(Item("Мои игры", null), "games");
 
-            fastItem = MenuKit.Icon(Item("Подобрать: быстро", (s, e) => { wantOn = true; RunSelect("fast", false, true); }), "fast", "Найдёт первый рабочий конфиг");
-            bestItem = MenuKit.Icon(Item("Подобрать: минимальный пинг", (s, e) => { wantOn = true; RunSelect("best", false, true); }), "ping", "Проверит все и выберет лучший, это дольше");
+            fastItem = MenuKit.Icon(Item("Подобрать: быстро", (s, e) => UserSelect("fast")), "fast", "Найдёт первый рабочий конфиг");
+            bestItem = MenuKit.Icon(Item("Подобрать: минимальный пинг", (s, e) => UserSelect("best")), "ping", "Проверит все и выберет лучший, это дольше");
             manualItem = MenuKit.Icon(Item("Выбрать конфиг вручную", null), "list", "Если знаешь, какой нужен");
             sitesItem = MenuKit.Icon(Item("Мои сайты...", (s, e) => OpenSites()), "sites");
             reportItem = MenuKit.Icon(Item("Что-то не работает", (s, e) => MakeReport()), "report", "Скопирует отчёт, вставь его в чат");
@@ -315,6 +318,10 @@ namespace ZapretTray
                         { hintsItem, new HintsView() }
                     });
                 panel.RunningGame = () => runningGame;
+                panel.ToggleTheme = () => { SetTheme(Theme.Current == Palette.Dark ? Theme.Light : Theme.Dark); RefreshMenu(); };
+                // Плитки 0-3: сервисы. 4, 5, 6: скорость, пинг, время работы
+                panel.TileChecking = i => i < 4 ? tileChecking[i] || tilePending[i] : i == 5 && pinging;
+                panel.RecheckTile = i => { if (i < 4) RecheckTile(i); else RefreshNumbers(i == 5); };
                 panel.FormClosed += (s, e) => panel = null;
                 panel.ShowCentered();
             }
@@ -366,7 +373,7 @@ namespace ZapretTray
             toggleItem.Text = wantOn ? "Выключить" : "Включить";
             toggleItem.ToolTipText = wantOn ? "Обход блокировок остановится" : "Обход блокировок заработает";
             toggleItem.Tag = wantOn ? ItemKind.PowerOff : ItemKind.PowerOn;
-            fastItem.Enabled = bestItem.Enabled = manualItem.Enabled = !busy;
+            fastItem.Enabled = bestItem.Enabled = manualItem.Enabled = afterSelect == null;   // идёт подбор при запуске - нажать можно, он перезапустится. Нельзя только при проверке новых конфигов
             bool dnsApplied = DnsFix.IsApplied(paths);
             dnsFixItem.Enabled = !dnsApplied && !dnsBusy;
             dnsUndoItem.Enabled = dnsApplied && !dnsBusy;
@@ -504,25 +511,153 @@ namespace ZapretTray
                 var mine = res.Skip(MainSites.Length).Take(sites.Count).ToList();
                 var gameSites = res.Skip(MainSites.Length + sites.Count).ToList();
                 // Игра считается рабочей, если отвечает хотя бы один её адрес: не все адреса игр открываются как сайт
-                int gamesOk = presets.Count(p => p.Item2.Any(d => gameSites.Any(x => x.Opened && x.Url == "https://" + d)));
                 healthMarks = string.Join("\t", main.Select(x => x.Opened ? "✓" : "✗"))
-                    + "\t" + (presets.Count == 0 ? "" : presets.Count > 1 ? CountMark(gamesOk, presets.Count) : gamesOk == 1 ? "✓" : "✗")
+                    + "\t" + GamesMark(presets, gameSites)
                     + "\t" + (mine.Count > 0 ? CountMark(mine.Count(x => x.Opened), mine.Count) : "");
-                var gameAnswered = gameSites.Where(x => x.Opened && x.TlsMs >= 1).ToList();
-                gameTime = gameAnswered.Count > 0 ? "отклик " + (int)gameAnswered.Min(x => x.TlsMs) + " мс" : "";
+                gameTime = GameTimeOf(gameSites);
                 var ping = t.Result.Item3;
                 youtubeTime = TimesOf(main[0], ping[0]);
                 discordTime = TimesOf(main[1], ping[1]);
-                var answered = mine.Where(x => x.Opened && x.TlsMs >= 1).ToList();
-                var sitePings = ping.Skip(MainSites.Length).Where(x => x >= 0).ToList();
-                sitesTime = (answered.Count > 0 ? "отклик " + (int)answered.Average(x => x.TlsMs) + " мс" : "")
-                    + (answered.Count > 0 && sitePings.Count > 0 ? "\n" : "")
-                    + (sitePings.Count > 0 ? "пинг " + (int)sitePings.Average() + " мс" : "");
+                sitesTime = SitesTimeOf(mine, ping.Skip(MainSites.Length));
                 healthProblem = main.Any(x => !x.Opened);
                 healthVpn = t.Result.Item2;
                 healthAt = DateTime.UtcNow;
                 UpdateLabels();
+                RunPendingTiles();
             }));
+        }
+
+        // Поменялся список сайтов или игр: проверяем только эту плитку, а не всё сразу. Иначе она ждёт самый медленный адрес среди всех
+        void TileEdited(int tile)
+        {
+            if (panel == null || healthMarks == null)
+            {
+                RecheckHealthNow();
+                return;
+            }
+            tilePending[tile] = true;
+            panel.ShowTileCheck(tile);
+            RunPendingTiles();
+        }
+
+        void RunPendingTiles()
+        {
+            if (healthChecking || busy) return;
+            if (healthMarks == null)
+            {
+                // Zapret так и не запустился: проверять нечего, кружок не должен крутиться вечно
+                if (!Util.WinwsRunning()) Array.Clear(tilePending, 0, tilePending.Length);
+                return;
+            }
+            for (int i = 0; i < tilePending.Length; i++)
+            {
+                if (!tilePending[i] || tileChecking[i]) continue;
+                tilePending[i] = false;
+                RecheckTile(i);
+            }
+        }
+
+        // Нажали на плитку с цифрами: обновляем сразу, не дожидаясь таймера
+        void RefreshNumbers(bool ping)
+        {
+            if (ping) pingAt = DateTime.MinValue;
+            UpdateSpeed();
+            UpdateLabels();
+        }
+
+        // Нажали на плитку на главной: проверяем заново только её, остальные не трогаем. Конфиг при этом не меняется
+        void RecheckTile(int tile)
+        {
+            if (tileChecking[tile]) return;
+            // Идёт подбор или первая проверка: кружок уже крутится, проверим сразу, как освободится
+            if (busy || healthMarks == null)
+            {
+                tilePending[tile] = true;
+                return;
+            }
+            if (!Util.WinwsRunning()) return;
+            var presets = EnabledPresets();
+            var urls = tile < MainSites.Length ? new List<string> { MainSites[tile] }
+                : tile == 2 ? presets.SelectMany(p => p.Item2).Select(d => "https://" + d).ToList()
+                : UserSites();
+            if (urls.Count == 0)
+            {
+                // Убрали последний сайт или игру: проверять нечего, в плитке снова прочерк
+                var empty = healthMarks.Split('\t');
+                empty[tile] = "";
+                healthMarks = string.Join("\t", empty);
+                if (tile == 2) gameTime = ""; else if (tile == 3) sitesTime = "";
+                UpdateLabels();
+                return;
+            }
+            tileChecking[tile] = true;
+            int gen = healthGen;
+            Task.Factory.StartNew(() =>
+            {
+                // Адреса игр - не сайты, пинг у них считается отдельно
+                var icmp = tile == 2 ? new List<Task<long>>() : urls.Select(u => Task.Factory.StartNew(() => IcmpMs(u.Replace("https://", "")), TaskCreationOptions.LongRunning)).ToList();
+                var opened = SiteCheck.RunAll(urls, HealthTimeoutSec);
+                return Tuple.Create(opened, icmp.Select(p => p.Result).ToList());
+            }).ContinueWith(t => OnUi(() =>
+            {
+                tileChecking[tile] = false;
+                if (t.IsFaulted)
+                {
+                    Logger.Write("значки: " + t.Exception.InnerException.Message);
+                    RunPendingTiles();
+                    return;
+                }
+                // Пока проверяли, всё поменялось или список снова правили: результат устарел
+                if (gen != healthGen || healthMarks == null || tilePending[tile])
+                {
+                    RunPendingTiles();
+                    return;
+                }
+                var res = t.Result.Item1;
+                var marks = healthMarks.Split('\t');
+                if (tile < MainSites.Length)
+                {
+                    marks[tile] = res[0].Opened ? "✓" : "✗";
+                    if (tile == 0) youtubeTime = TimesOf(res[0], t.Result.Item2[0]);
+                    else discordTime = TimesOf(res[0], t.Result.Item2[0]);
+                }
+                else if (tile == 2)
+                {
+                    marks[2] = GamesMark(presets, res);
+                    gameTime = GameTimeOf(res);
+                }
+                else
+                {
+                    marks[3] = CountMark(res.Count(x => x.Opened), res.Count);
+                    sitesTime = SitesTimeOf(res, t.Result.Item2);
+                }
+                healthMarks = string.Join("\t", marks);
+                healthProblem = marks[0] == "✗" || marks[1] == "✗";
+                UpdateLabels();
+                RunPendingTiles();
+            }));
+        }
+
+        // Игра считается рабочей, если отвечает хотя бы один её адрес: не все адреса игр открываются как сайт
+        static string GamesMark(List<Tuple<string, string[]>> presets, List<SiteResult> gameSites)
+        {
+            int ok = presets.Count(p => p.Item2.Any(d => gameSites.Any(x => x.Opened && x.Url == "https://" + d)));
+            return presets.Count == 0 ? "" : presets.Count > 1 ? CountMark(ok, presets.Count) : ok == 1 ? "✓" : "✗";
+        }
+
+        static string GameTimeOf(List<SiteResult> gameSites)
+        {
+            var answered = gameSites.Where(x => x.Opened && x.TlsMs >= 1).ToList();
+            return answered.Count > 0 ? "отклик " + (int)answered.Min(x => x.TlsMs) + " мс" : "";
+        }
+
+        static string SitesTimeOf(List<SiteResult> mine, IEnumerable<long> pings)
+        {
+            var answered = mine.Where(x => x.Opened && x.TlsMs >= 1).ToList();
+            var replied = pings.Where(x => x >= 0).ToList();
+            return (answered.Count > 0 ? "отклик " + (int)answered.Average(x => x.TlsMs) + " мс" : "")
+                + (answered.Count > 0 && replied.Count > 0 ? "\n" : "")
+                + (replied.Count > 0 ? "пинг " + (int)replied.Average() + " мс" : "");
         }
 
         // Отклик - время защищённого соединения, пинг - как в играх. Сервер может не отвечать на пинг, тогда только отклик
@@ -590,6 +725,7 @@ namespace ZapretTray
             UpdateSpeed();
             if (panel != null && panel.Visible) CheckHealth();
             UpdateLabels();
+            RunPendingTiles();
         }
 
         void UpdateLabels()
@@ -752,6 +888,7 @@ namespace ZapretTray
             wantOn = true;
             busy = true;
             busyText = "Жду интернет...";
+            int wait = ++waitGen;
             UpdateState();
             Task.Factory.StartNew(() =>
             {
@@ -759,14 +896,27 @@ namespace ZapretTray
                 for (int i = 0; i < 24 && !Util.InternetUp(); i++) Thread.Sleep(5000);
             }).ContinueWith(t => OnUi(() =>
             {
+                if (wait != waitGen) return;   // пока ждали, нажали выключение или другой подбор
                 busy = false;
                 if (wantOn) RunSelect("fast", false, false);
             }));
         }
 
+        // Подбор по кнопке. Подбор при запуске уже идёт - заменяем его, а не заставляем ждать. Отменённый сам выйдет, новый его дождётся
+        void UserSelect(string mode)
+        {
+            if (afterSelect != null) return;
+            wantOn = true;
+            waitGen++;
+            CancelSelect();
+            busy = false;
+            RunSelect(mode, false, true);
+        }
+
         void TurnOff()
         {
             wantOn = false;
+            waitGen++;
             CancelSelect();
             busy = false;
             Util.KillWinws();
@@ -993,7 +1143,9 @@ namespace ZapretTray
                 changed = Util.AppendUnique(paths.ListGeneralUser, value);
                 changed |= Util.RemoveEntry(paths.ListExcludeUser, value);
             }
-            if (changed || note.Length > 0) RecheckHealthNow();   // winws сам перечитывает изменившиеся списки, перезапуск не нужен
+            // winws сам перечитывает изменившиеся списки, перезапуск не нужен. IP применяются иначе, там проверяем всё
+            if (isIp && (changed || note.Length > 0)) RecheckHealthNow();
+            else if (changed) TileEdited(3);
             return note;
         }
 
@@ -1022,7 +1174,7 @@ namespace ZapretTray
                 else if (!on && plain < 0) lines.Add(d);
             }
             Util.WriteLinesAtomic(file, lines);
-            RecheckHealthNow();
+            TileEdited(2);
         }
 
         // Мои сайты: (значение, файл, исключён ли). Заглушки из шаблонов zapret и домены встроенных игр не показываем
@@ -1047,8 +1199,12 @@ namespace ZapretTray
         void RemoveSite(string value, string file)
         {
             Util.RemoveEntry(file, value);
-            if (file == paths.IpsetUser || file == paths.IpsetExcludeUser) ReapplyIpset();
-            RecheckHealthNow();
+            if (IsIpFile(file))
+            {
+                ReapplyIpset();
+                RecheckHealthNow();
+            }
+            else TileEdited(3);
         }
 
         bool IsIpFile(string file)
@@ -1360,11 +1516,27 @@ namespace ZapretTray
         // Выбрать конфиг вручную: он становится первым в запомненных и сразу запускается
         void UseConfig(string file)
         {
-            if (busy) return;
+            if (afterSelect != null) return;
             var saved = Util.ReadEntries(paths.BestConfig).Where(n => !string.Equals(n, file, StringComparison.OrdinalIgnoreCase));
             Util.WriteLinesAtomic(paths.BestConfig, new[] { file }.Concat(saved).Take(3));
             wantOn = true;
-            RestartCurrent();
+            if (!busy)
+            {
+                RestartCurrent();
+                return;
+            }
+            // Идёт подбор: он может погасить winws, поэтому запускаем выбранный конфиг, только когда он вышел
+            int wait = ++waitGen;
+            CancelSelect();
+            busyText = "Запускаю выбранный конфиг...";
+            UpdateLabels();
+            Task.Factory.StartNew(() => { lock (selectLock) { } }, TaskCreationOptions.LongRunning).ContinueWith(t => OnUi(() =>
+            {
+                if (wait != waitGen) return;
+                busy = false;
+                RestartCurrent();
+                UpdateState();
+            }));
         }
 
         // Пересобрать ipset-all.txt из своих IP и включённых игр. Возвращает предупреждение или ""

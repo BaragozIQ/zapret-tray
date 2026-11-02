@@ -210,9 +210,12 @@ namespace ZapretTray
             return new Rectangle(10, homeTab.Bottom + 6 + i * 48, SideWidth - 20, 42);
         }
 
-        // Внизу колонки, под линией: выключить и выход
-        Rectangle ToggleTab { get { return new Rectangle(10, ClientSize.Height - 100, SideWidth - 20, 42); } }
+        // Внизу колонки, под линией: включение, день и ночь, выход
+        Rectangle ToggleTab { get { return new Rectangle(10, ClientSize.Height - 148, SideWidth - 20, 42); } }
+        Rectangle ThemeTab { get { return new Rectangle(10, ClientSize.Height - 100, SideWidth - 20, 42); } }
         Rectangle ExitTab { get { return new Rectangle(10, ClientSize.Height - 52, SideWidth - 20, 42); } }
+
+        public Action ToggleTheme;
 
         Rectangle BackButton { get { return new Rectangle(SideWidth + Pad, 14, 30, 30); } }
 
@@ -232,7 +235,14 @@ namespace ZapretTray
         {
             if (CloseButton.Contains(p)) return "close";
             if (MinimizeButton.Contains(p)) return "min";
+            if (ToggleTheme != null && ThemeTab.Contains(p)) return "theme";
             if (path.Count == 0 && health.Available && gameHelp.Contains(p)) return "help";
+            if (path.Count == 0 && health.Available && RecheckTile != null)
+            {
+                if (statusRect.Contains(p)) return "status";
+                for (int i = 0; i < tileRects.Length; i++)
+                    if (tileRects[i].Contains(p) && TileClickable(i)) return "tile" + i;
+            }
             if (homeTab.Contains(p)) return homeTab;
             if (ToggleTab.Contains(p)) return toggle;
             if (ExitTab.Contains(p)) return exit;
@@ -290,7 +300,10 @@ namespace ZapretTray
             else if (hit as string == "close") { Close(); return; }
             else if (hit as string == "min") Hide();
             else if (hit as string == "help") { }
+            else if (hit as string == "theme") ToggleTheme();
             else if (hit as string == "back") Back();
+            else if (hit as string == "status") { for (int i = 0; i < 4; i++) if (TileHasResult(i)) StartTileCheck(i); }
+            else if (hit is string && ((string)hit).StartsWith("tile")) TileClick(((string)hit)[4] - '0');
             else if (hit as string == "view") { if (CurrentView.Click(e.Location)) scroll = 0; }
             else Press((ToolStripMenuItem)hit);
             Invalidate();
@@ -490,6 +503,8 @@ namespace ZapretTray
 
         protected override void OnPaint(PaintEventArgs e)
         {
+            // Свёрнутое окно имеет нулевой размер, а Windows всё равно может попросить его нарисовать
+            if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.DrawImageUnscaled(Backdrop(), 0, 0);   // тема могла смениться, пока окно открыто
@@ -521,7 +536,14 @@ namespace ZapretTray
             int lineY = ToggleTab.Top - 8;
             using (var p = new Pen(P.Separator)) g.DrawLine(p, 16, lineY, SideWidth - 16, lineY);
             bool on = (toggle.Tag as string) != ItemKind.PowerOn;
-            DrawTab(g, ToggleTab, toggle.Text, "power", false, hover == toggle, on ? Theme.Bad : Theme.On);
+            // Выключение - настоящий переключатель: сразу видно, включено или нет
+            if (hover == toggle) Box(g, ToggleTab, P.Hover, 9);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            int powerY = ToggleTab.Top + ToggleTab.Height / 2;
+            ThemedRenderer.DrawIcon(g, "power", ToggleTab.Left + 12, powerY, on ? Theme.On : P.SubText);
+            TextRenderer.DrawText(g, on ? "Включён" : "Выключен", MenuKit.Bold, new Rectangle(ToggleTab.Left + 38, ToggleTab.Top, ToggleTab.Width - 88, ToggleTab.Height), on ? P.Text : P.SubText, Line);
+            DrawSwitch(g, new Rectangle(ToggleTab.Right - 46, powerY - 10, 36, 20), on);
+            if (ToggleTheme != null) DrawThemeTab(g);
             DrawTab(g, ExitTab, exit.Text, "exit", false, hover == exit);
 
             // Статус и версия видны всегда
@@ -530,6 +552,44 @@ namespace ZapretTray
             using (var b = new SolidBrush(statusColor())) g.FillEllipse(b, 20, y + 8, 9, 9);
             TextRenderer.DrawText(g, status.Value.Split((char)9)[0], MenuKit.Small, new Rectangle(36, y, SideWidth - 44, 26), P.SubText, Line);
             TextRenderer.DrawText(g, "Версия " + AppInfo.Version, MenuKit.Small, new Rectangle(20, y + 24, SideWidth - 28, 22), P.Disabled, Line);
+        }
+
+        // День и ночь: значок показывает, какая тема сейчас, нажатие меняет её
+        void DrawThemeTab(Graphics g)
+        {
+            var r = ThemeTab;
+            bool dark = P == Palette.Dark;
+            if (Equals(hover, "theme")) Box(g, r, P.Hover, 9);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            int cx = r.Left + 20, cy = r.Top + r.Height / 2;
+            if (dark)
+            {
+                // Месяц: круг без сдвинутого круга
+                using (var moon = new GraphicsPath())
+                using (var bite = new GraphicsPath())
+                {
+                    moon.AddEllipse(cx - 8, cy - 8, 16, 16);
+                    bite.AddEllipse(cx - 4, cy - 11, 15, 15);
+                    using (var region = new Region(moon))
+                    using (var b = new SolidBrush(Color.FromArgb(150, 180, 255)))
+                    {
+                        region.Exclude(bite);
+                        g.FillRegion(b, region);
+                    }
+                }
+            }
+            else
+            {
+                var sun = Color.FromArgb(232, 150, 20);
+                using (var b = new SolidBrush(sun)) g.FillEllipse(b, cx - 4.5f, cy - 4.5f, 9, 9);
+                using (var p = new Pen(sun, 1.7f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                    for (int i = 0; i < 8; i++)
+                    {
+                        double a = i * Math.PI / 4;
+                        g.DrawLine(p, cx + (float)(Math.Cos(a) * 6.8), cy + (float)(Math.Sin(a) * 6.8), cx + (float)(Math.Cos(a) * 9), cy + (float)(Math.Sin(a) * 9));
+                    }
+            }
+            TextRenderer.DrawText(g, dark ? "Ночь" : "День", MenuKit.Bold, new Rectangle(r.Left + 38, r.Top, r.Width - 42, r.Height), P.Text, Line);
         }
 
         void DrawTab(Graphics g, Rectangle r, string text, string icon, bool active, bool hovered, Color? accent = null)
@@ -569,6 +629,94 @@ namespace ZapretTray
 
         Rectangle gameHelp;
         const int TimesHeight = 72;
+
+        // Плитка по нажатию проверяется заново. Сама проверка в TrayContext, здесь только вид: кружок вместо результата
+        public Func<int, bool> TileChecking;
+        public Action<int> RecheckTile;
+        const int MinSpinMs = 800, PopMs = 260;   // быстрый ответ не должен мелькнуть: кружок виден хотя бы столько
+        // Номера: 0-3 сервисы, 4-6 скорость, пинг, время работы. Плитка статуса проверяет все сервисы
+        readonly Rectangle[] tileRects = new Rectangle[7];
+        readonly int[] spinStart = { -1, -1, -1, -1, -1, -1, -1 }, popStart = { -1, -1, -1, -1, -1, -1, -1 };
+        Rectangle statusRect;
+        Timer tileTimer;
+
+        bool TileHasResult(int i)
+        {
+            if (i >= 4) return true;
+            var parts = health.Value.Split((char)9);
+            return i < parts.Length && parts[i].Length > 0;   // "⋯" тоже: нажатие запомнится и сработает, как только освободится
+        }
+
+        // Игры и сайты с прочерком нажимаются: открывают свой раздел, где их добавить
+        bool TileClickable(int i)
+        {
+            if (TileHasResult(i)) return true;
+            var parts = health.Value.Split((char)9);
+            return i >= 2 && (i >= parts.Length || parts[i].Length == 0);
+        }
+
+        void TileClick(int i)
+        {
+            if (TileHasResult(i)) StartTileCheck(i);
+            else if (i - 2 < sections.Length) Press(sections[i - 2]);
+        }
+
+        static int Elapsed(int since) { return unchecked(Environment.TickCount - since) & int.MaxValue; }
+
+        void StartTileCheck(int i)
+        {
+            if (spinStart[i] >= 0) return;
+            RecheckTile(i);
+            ShowTileCheck(i);
+        }
+
+        // Кружок в плитке. Проверку запускает тот, кто вызвал: нажатие или правка списка
+        public void ShowTileCheck(int i)
+        {
+            if (spinStart[i] >= 0) return;
+            spinStart[i] = Environment.TickCount & int.MaxValue;
+            popStart[i] = -1;
+            if (tileTimer == null)
+            {
+                tileTimer = new Timer { Interval = 30 };
+                tileTimer.Tick += (s, e) => TileAnimate();
+                Disposed += (s, e) => tileTimer.Dispose();
+            }
+            tileTimer.Start();
+        }
+
+        void TileAnimate()
+        {
+            bool active = false;
+            for (int i = 0; i < spinStart.Length; i++)
+            {
+                if (spinStart[i] >= 0 && Elapsed(spinStart[i]) >= MinSpinMs && !TileChecking(i))
+                {
+                    spinStart[i] = -1;
+                    popStart[i] = Environment.TickCount & int.MaxValue;
+                }
+                if (popStart[i] >= 0 && Elapsed(popStart[i]) >= PopMs) popStart[i] = -1;
+                if (spinStart[i] < 0 && popStart[i] < 0) continue;
+                active = true;
+                if (path.Count == 0) Invalidate(tileRects[i]);
+            }
+            if (path.Count == 0) Invalidate(statusRect);
+            if (active) return;
+            tileTimer.Stop();
+            Invalidate();
+        }
+
+        // Кружок загрузки: хвост цвета плитки плавно сходит на нет
+        static void DrawSpinner(Graphics g, Color color, int cx, int cy, int ms)
+        {
+            const int Steps = 26, Radius = 12;
+            float head = ms * 0.42f;
+            var box = new RectangleF(cx - Radius, cy - Radius, Radius * 2, Radius * 2);
+            using (var track = new Pen(Color.FromArgb(38, color), 3f)) g.DrawEllipse(track, box);
+            for (int n = 0; n < Steps; n++)
+                using (var p = new Pen(Color.FromArgb(255 * (n + 1) / Steps, color), 3f) { StartCap = LineCap.Flat, EndCap = n == Steps - 1 ? LineCap.Round : LineCap.Flat })
+                    g.DrawArc(p, box, head + n * 11f, 12f);
+        }
         static readonly Font TimeLabel = new Font("Segoe UI", 10.5f), TimeValue = new Font("Segoe UI Semibold", 10.5f);
 
         // "отклик 183 мс": слева название серым, справа значение
@@ -639,7 +787,9 @@ namespace ZapretTray
                 // Игра запущена и подключена: просто галочка, а не счёт встроенных игр
                 if (i == 2 && RunningGame != null && RunningGame() != null) part = "✓";
                 int left = x + (tile + Gap) * n++, mid = left + tile / 2, cy = y + (h - TimesHeight - 96) / 2 + 21;   // значок, название и результат по центру над табличкой
-                Card(g, new Rectangle(left, y, tile, h), P.Card, 10);
+                tileRects[i] = new Rectangle(left, y, tile, h);
+                bool hot = Equals(hover, "tile" + i), spinning = spinStart[i] >= 0;
+                Card(g, tileRects[i], hot ? P.Hover : P.Card, 10, hot ? P.Check : (Color?)null);
 
                 // По центру плитки столбиком: значок, название, результат
                 var state = g.Save();
@@ -647,7 +797,8 @@ namespace ZapretTray
                 Image gameIcon = null;
                 string title = ServiceNames[i];
                 if (exe != null) GameLook(exe, out gameIcon, out title);
-                Glow(g, new Rectangle(mid - 54, cy - 48, 108, 96), ServiceColors[i], 60);
+                // Пока идёт проверка, свечение значка дышит
+                Glow(g, new Rectangle(mid - 54, cy - 48, 108, 96), ServiceColors[i], spinning ? 90 + (int)(70 * Math.Sin(Elapsed(spinStart[i]) * 0.006)) : 60);
                 if (gameIcon != null) GamePicture(g, gameIcon, new Rectangle(mid - 21, cy - 21, 42, 42), 10);   // квадратный значок целиком, не обрезаем
                 else
                 {
@@ -661,7 +812,8 @@ namespace ZapretTray
                 TextRenderer.DrawText(g, title, valueFont, new Rectangle(left + 6, cy + 28, tile - 12, 28), P.Text, centered);
 
                 int ry = cy + 72;
-                if (part.Length == 0 && exe != null) { }   // игра запущена, встроенных адресов проверять не нужно: главное - пинг
+                if (spinning) DrawSpinner(g, Mix(ServiceColors[i], P.Text, 0.2f), mid, ry, Elapsed(spinStart[i]));
+                else if (part.Length == 0 && exe != null) { }   // игра запущена, встроенных адресов проверять не нужно: главное - пинг
                 else if (part.Length == 0)
                     TextRenderer.DrawText(g, "—", valueFont, new Rectangle(left + 6, ry - 14, tile - 12, 28), P.Disabled, centered);
                 else if (part.Length > 1)
@@ -674,8 +826,11 @@ namespace ZapretTray
                 else
                 {
                     var mark = g.Save();
-                    g.TranslateTransform(mid - 8, ry);
-                    g.ScaleTransform(1.6f, 1.6f);
+                    // Новый результат появляется с лёгким отскоком
+                    float pop = popStart[i] >= 0 ? 1f - Math.Min(1f, Elapsed(popStart[i]) / (float)PopMs) : 0f;
+                    float scale = 1.6f * (1f + 0.5f * pop * pop);
+                    g.TranslateTransform(mid - 8 * (scale / 1.6f), ry);
+                    g.ScaleTransform(scale, scale);
                     ThemedRenderer.DrawResult(g, part, 0, 0, 12, new Rectangle(0, -8, 12, 16));
                     g.Restore(mark);
                 }
@@ -686,7 +841,7 @@ namespace ZapretTray
                 if (time.Length > 0)
                 {
                     int tableTop = y + h - TimesHeight;
-                    using (var pen = new Pen(P.Separator)) g.DrawLine(pen, left + 16, tableTop, left + tile - 16, tableTop);
+                    using (var pen = new Pen(hot ? Mix(P.Separator, P.SubText, 0.3f) : P.Separator)) g.DrawLine(pen, left + 16, tableTop, left + tile - 16, tableTop);   // цвет наведения совпадает с линией
                     var lines = time.Split((char)10);
                     int rowTop = tableTop + (TimesHeight - lines.Length * 26) / 2;
                     for (int line = 0; line < lines.Length; line++)
@@ -714,12 +869,21 @@ namespace ZapretTray
             int tile = (w - Gap * count) / (count + 1);
             var centered = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine;
 
-            Card(g, new Rectangle(x, y, tile, h), P.Card, 10);
+            statusRect = new Rectangle(x, y, tile, h);
+            bool statusHot = Equals(hover, "status");
+            Card(g, statusRect, statusHot ? P.Hover : P.Card, 10, statusHot ? P.Check : (Color?)null);
             var parts = status.Value.Split((char)9);
             var color = statusColor();
             int cx = x + tile / 2, dotY = y + h / 2 - 46;
             using (var b = new SolidBrush(Color.FromArgb(60, color))) g.FillEllipse(b, cx - 11, dotY - 3, 22, 22);
             using (var b = new SolidBrush(color)) g.FillEllipse(b, cx - 6, dotY + 2, 12, 12);
+            // Пока проверяются сервисы, вокруг точки идёт кружок
+            for (int s = 0; s < 4; s++)
+                if (spinStart[s] >= 0)
+                {
+                    DrawSpinner(g, Mix(color, P.Text, 0.2f), cx, dotY + 8, Elapsed(spinStart[s]));
+                    break;
+                }
             // Длинный текст подбора: мельче и на всю высоту, чтобы влез целиком
             bool longText = parts[0].Length > 22;
             TextRenderer.DrawText(g, parts[0], longText ? MenuKit.Bold : valueFont, new Rectangle(x + 8, dotY + 22, tile - 16, parts.Length > 1 ? 44 : 70), P.Text,
@@ -729,17 +893,20 @@ namespace ZapretTray
 
             for (int i = 0; i < count; i++)
             {
-                int left = x + (tile + Gap) * (i + 1);
-                Card(g, new Rectangle(left, y, tile, h), P.Card, 10);
+                int left = x + (tile + Gap) * (i + 1), number = i + 4;
+                tileRects[number] = new Rectangle(left, y, tile, h);
+                bool hot = Equals(hover, "tile" + number);
+                Card(g, tileRects[number], hot ? P.Hover : P.Card, 10, hot ? P.Check : (Color?)null);
                 Glow(g, new Rectangle(left + tile / 2 - 54, y + h / 2 - 88, 108, 96), NumberColors[i], 60);
                 var state = g.Save();
                 g.TranslateTransform(left + tile / 2 - 27, y + h / 2 - 40);
                 g.ScaleTransform(3f, 3f);
                 if (i == 0) ThemedRenderer.DrawSpeedometer(g, SpeedLevel(numbers[i]), 0, 0);
                 else if (i == 1) ThemedRenderer.DrawSignal(g, PingBars(numbers[i]), 0, 0);
-                else ThemedRenderer.DrawStopwatch(g, numbers[i] == "—" ? 0 : DateTime.Now.Second / 60.0, 0, 0);
+                else ThemedRenderer.DrawClock(g, UptimeMinutes(numbers[i]), 0, 0);
                 g.Restore(state);
-                TextRenderer.DrawText(g, numbers[i], heroFont, new Rectangle(left + 6, y + h / 2 - 16, tile - 12, 44), P.Text, centered);
+                if (spinStart[number] >= 0) DrawSpinner(g, Mix(NumberColors[i], P.Text, 0.2f), left + tile / 2, y + h / 2 + 6, Elapsed(spinStart[number]));
+                else TextRenderer.DrawText(g, numbers[i], heroFont, new Rectangle(left + 6, y + h / 2 - 16, tile - 12, 44), P.Text, centered);
                 TextRenderer.DrawText(g, NumberNames[i], MenuKit.Font, new Rectangle(left + 8, y + h / 2 + 26, tile - 16, 24), P.SubText, centered);
             }
         }
@@ -758,6 +925,14 @@ namespace ZapretTray
             if (value <= 0) return 0;
             double kb = text.Contains("МБ") ? value * 1024 : value;
             return Math.Max(0, Math.Min(1, Math.Log10(Math.Max(kb, 1)) / 5));
+        }
+
+        // "2 ч 14 мин" - 134. "<1 мин" и прочерк - 0: стрелки смотрят на 12
+        static double UptimeMinutes(string text)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(text, @"^(?:(\d+) ч )?(\d+) мин$");
+            if (!m.Success) return 0;
+            return (m.Groups[1].Success ? int.Parse(m.Groups[1].Value) * 60 : 0) + int.Parse(m.Groups[2].Value);
         }
 
         static int PingBars(string text)

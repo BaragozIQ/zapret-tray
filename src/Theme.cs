@@ -727,17 +727,18 @@ namespace ZapretTray
                 }
         }
 
-        // Секундомер: стрелка от 0 до 1 за круг
-        public static void DrawStopwatch(Graphics g, double turn, int x, int cy)
+        // Часы: сколько минут показать. Часовая стрелка делает круг за 12 часов, минутная за час
+        public static void DrawClock(Graphics g, double minutes, int x, int cy)
         {
             using (var path = RoundRect(new Rectangle(x, cy - 7, 18, 14), 4))
             using (var b = new SolidBrush(Color.FromArgb(222, 70, 128))) g.FillPath(b, path);
-            double angle = 2 * Math.PI * turn - Math.PI / 2;
+            double hourAngle = 2 * Math.PI * minutes / 720 - Math.PI / 2, minuteAngle = 2 * Math.PI * minutes / 60 - Math.PI / 2;
             using (var p = new Pen(Color.White, 1.1f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
             {
-                g.DrawEllipse(p, x + 4.5f, cy - 3.5f, 9, 9);
-                g.DrawLine(p, x + 7.5f, cy - 5.5f, x + 10.5f, cy - 5.5f);
-                g.DrawLine(p, x + 9, cy + 1, x + 9 + (float)(Math.Cos(angle) * 3), cy + 1 + (float)(Math.Sin(angle) * 3));
+                g.DrawEllipse(p, x + 3.5f, cy - 5.5f, 11, 11);
+                g.DrawLine(p, x + 9, cy, x + 9 + (float)(Math.Cos(minuteAngle) * 4), cy + (float)(Math.Sin(minuteAngle) * 4));
+                p.Width = 1.4f;
+                g.DrawLine(p, x + 9, cy, x + 9 + (float)(Math.Cos(hourAngle) * 2.4), cy + (float)(Math.Sin(hourAngle) * 2.4));
             }
         }
 
