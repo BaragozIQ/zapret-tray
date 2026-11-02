@@ -64,8 +64,8 @@ namespace ZapretTray
 
         InfoItem statusItem, healthItem, statsItem;
         ToolStripMenuItem toggleItem, repairItem, fastItem, bestItem, manualItem;
-        ToolStripMenuItem sitesItem, reportItem, settingsItem, themeItem, autoupdateItem, notifyItem, updateItem, dnsFixItem, dnsUndoItem;
-        bool dnsBusy, dnsOffered, watchVpnLogged;
+        ToolStripMenuItem scaleItem, bugItem, sitesItem, reportItem, settingsItem, themeItem, autoupdateItem, notifyItem, updateItem, dnsFixItem, dnsUndoItem;
+        bool dnsBusy, dnsAutoTried, watchVpnLogged;
 
         // Значки в меню: результат последней проверки, null - проверки ещё не было
         static readonly string[] MainSites = { "https://www.youtube.com", "https://discord.com" };
@@ -98,6 +98,14 @@ namespace ZapretTray
         string speedText = "";
         long pingMs = -1;
         DateTime pingAt = DateTime.MinValue;
+        // Графики в плитках за последний час: 0 YouTube, 1 Discord, 2 игра, 3 мои сайты (пинг), 4 скорость, 5 пинг. Замер раз в 10 секунд, 360 штук
+        readonly List<long>[] history = Enumerable.Range(0, 6).Select(i => new List<long>()).ToList().ToArray();
+        readonly List<DateTime>[] historyAt = Enumerable.Range(0, 6).Select(i => new List<DateTime>()).ToList().ToArray();   // когда замерено (UTC)
+        DateTime historySaved = DateTime.UtcNow;
+        const int HistoryMax = 360;
+        readonly string[] serviceIp = new string[2];   // DNS провайдера может не знать YouTube - тогда пингуем адрес из проверки
+        long rxSample = -1;
+        DateTime rxSampleAt;
         bool pinging;
         ToolStripMenuItem gamesItem, behaviorItem, watchdogItem, autostartItem, hintsItem, exitItem;
         ControlPanel panel;
@@ -126,13 +134,19 @@ namespace ZapretTray
             Logger.File_ = Path.Combine(paths.Utils, "tray.log");
             Logger.Write("запуск, версия " + AppInfo.Version);
             settings = new Settings(paths.Settings);
+            // Ошибка в окне или таймере: вместо системного окна с кодом - запись в журнал и предложение отправить баг (один раз)
+            Application.ThreadException += (s, e) => OnCrash(e.Exception);
+            LoadHistory();
             games = new GameStore(paths);
+            BugReport.MachineId(settings);   // номер компьютера появляется при первом запуске
 
             iconOn = MakeIcon(Color.FromArgb(46, 170, 80));
             iconOff = MakeIcon(Color.FromArgb(150, 150, 150));
             iconBusy = MakeIcon(Color.FromArgb(235, 175, 30));
 
             Theme.Mode = settings.Get("theme") ?? Theme.System;
+            int scalePercent;
+            if (int.TryParse(settings.Get("scale"), out scalePercent) && scalePercent >= 75 && scalePercent <= 200) ControlPanel.UserScale = scalePercent / 100f;
             BuildMenu();
             tray.Icon = iconOff;
             tray.Text = AppInfo.Name;
@@ -178,6 +192,21 @@ namespace ZapretTray
             if (lastVersion != AppInfo.Version)
             {
                 if (lastVersion != null) Logger.Write("обновлено до версии " + AppInfo.Version);
+                // Обновилась сама: один раз показываем, что появилось. Первая установка: коротко, что где
+                // 0.6 и раньше номер версии не запоминали: у них в журнале уже есть прошлые запуски - это обновление, а не новенький
+                bool firstRun = lastVersion == null && !RanBefore();
+                if (lastVersion == null && !firstRun) Logger.Write("обновлено до версии " + AppInfo.Version);
+                var show = firstRun ? WhatsNewDialog.Welcome : WhatsNewDialog.Has(AppInfo.Version) ? AppInfo.Version : null;
+                if (show != null)
+                {
+                    var later = new System.Windows.Forms.Timer { Interval = 4000 };
+                    later.Tick += (s, e) =>
+                    {
+                        later.Dispose();
+                        try { new WhatsNewDialog(show).Show(); } catch (Exception ex) { Logger.Write("что нового: " + ex.Message); }
+                    };
+                    later.Start();
+                }
                 settings.Set("version", AppInfo.Version);
             }
 
@@ -239,6 +268,11 @@ namespace ZapretTray
                 MenuKit.Sep("DNS"), dnsFixItem, dnsUndoItem,
                 MenuKit.Sep("Не помогло"), reportItem
             });
+            if (BugReport.Available)
+            {
+                bugItem = MenuKit.Icon(Item("Отправить баг", (s, e) => SendBug()), "load", "Отчёт сам уйдёт разработчику");
+                repairItem.DropDownItems.Add(bugItem);
+            }
 
             // Настройки
             settingsItem = MenuKit.Icon(Item("Настройки", null), "settings");
@@ -248,6 +282,16 @@ namespace ZapretTray
                 var mode = t.Item1;
                 themeItem.DropDownItems.Add(MenuKit.Icon(Item(t.Item2, (s, e) => SetTheme(mode)), t.Item3));
                 themeItem.DropDownItems[themeItem.DropDownItems.Count - 1].Tag = mode;
+            }
+            // Размер окна: поверх масштаба Windows, окно всё равно не вылезет за экран
+            scaleItem = MenuKit.Icon(Item("Размер окна", null), "monitor", "Если всё мелко - сделай крупнее");
+            // В окне программы это ползунок, в запасном меню - список
+            foreach (var stop in ControlPanel.ScaleStops)
+            {
+                var value = stop.ToString();
+                var sizeItem = MenuKit.Icon(Item(value + "%", (s, e) => SetScale(value)), "monitor");
+                sizeItem.Tag = value;
+                scaleItem.DropDownItems.Add(sizeItem);
             }
             watchdogItem = MenuKit.Icon(Check("Сторож (сам чинит, если сломалось)", "watchdog"), "shield");
             autostartItem = MenuKit.Icon(Item("Запускать вместе с Windows", null), "play", "Включается сама при входе");
@@ -261,10 +305,10 @@ namespace ZapretTray
             behaviorItem.DropDownItems.AddRange(new ToolStripItem[] { watchdogItem, autostartItem, autoupdateItem, notifyItem });
             updateItem = MenuKit.Icon(Item("Проверить обновления", (s, e) => CheckUpdate(true)), "refresh");
             settingsItem.DropDownItems.AddRange(new ToolStripItem[] {
-                MenuKit.Sep("Вид и работа"), themeItem, behaviorItem, MenuKit.Sep("Перенос настроек"),
+                // Все карточки парами, чтобы в рядах не было дыр
+                MenuKit.Sep("Вид"), themeItem, scaleItem, MenuKit.Sep("Работа"), behaviorItem, updateItem, MenuKit.Sep("Перенос настроек"),
                 MenuKit.Icon(Item("Сохранить настройки...", (s, e) => SaveSettings()), "save", "В файл, чтобы взять на другой компьютер"),
                 MenuKit.Icon(Item("Подгрузить настройки...", (s, e) => LoadSettings()), "load", "Взять из сохранённого файла"), MenuKit.Sep("Программа"),
-                updateItem,
                 MenuKit.Icon(Item("Открыть папку", (s, e) => Process.Start("explorer.exe", "\"" + paths.Root + "\"")), "folder", "Файлы и журнал программы"),
                 MenuKit.Icon(Item("Удалить программу...", (s, e) => Uninstall()), "trash", "Сначала спросит подтверждение")
             });
@@ -287,6 +331,7 @@ namespace ZapretTray
             MenuKit.SubMenu(manualItem, MenuKit.ManualWidth);
             MenuKit.SubMenu(settingsItem, MenuKit.SettingsWidth);
             MenuKit.SubMenu(themeItem, MenuKit.ThemeWidth);
+            MenuKit.SubMenu(scaleItem, MenuKit.ThemeWidth);
             MenuKit.SubMenu(behaviorItem, MenuKit.BehaviorWidth);
 
             menu.Opening += (s, e) => { ApplyTheme(); CheckHealth(); RefreshMenu(); };
@@ -308,7 +353,7 @@ namespace ZapretTray
             try
             {
                 panel = new ControlPanel(statusItem, healthItem, statsItem, () => renderer.StatusColor, () => youtubeTime + "\t" + discordTime + "\t" + GameTimes() + "\t" + sitesTime,
-                    new[] { gamesItem, sitesItem, repairItem, settingsItem, hintsItem }, new[] { fastItem, reportItem }, toggleItem, exitItem, () => { RefreshMenu(); },
+                    new[] { gamesItem, sitesItem, repairItem, settingsItem, hintsItem }, new[] { fastItem, bugItem ?? reportItem }, toggleItem, exitItem, () => { RefreshMenu(); },
                     new Dictionary<ToolStripMenuItem, IPanelView>
                     {
                         { sitesItem, new SitesView(MySites,
@@ -318,6 +363,10 @@ namespace ZapretTray
                         { hintsItem, new HintsView() }
                     });
                 panel.RunningGame = () => runningGame;
+                panel.TileHistory = i => history[i].ToArray();
+                panel.TileTimes = i => historyAt[i].ToArray();
+                panel.ScaleItem = scaleItem;
+                panel.ScaleChanged = value => SetScale(value.ToString());
                 panel.ToggleTheme = () => { SetTheme(Theme.Current == Palette.Dark ? Theme.Light : Theme.Dark); RefreshMenu(); };
                 // Плитки 0-3: сервисы. 4, 5, 6: скорость, пинг, время работы
                 panel.TileChecking = i => i < 4 ? tileChecking[i] || tilePending[i] : i == 5 && pinging;
@@ -346,6 +395,14 @@ namespace ZapretTray
             return item;
         }
 
+
+        void SetScale(string percent)
+        {
+            settings.Set("scale", percent == "100" ? null : percent);
+            ControlPanel.UserScale = int.Parse(percent) / 100f;
+            if (panel != null) panel.Rescale();
+            RefreshMenu();
+        }
 
         void SetTheme(string mode)
         {
@@ -380,6 +437,7 @@ namespace ZapretTray
             autostartItem.Checked = Tasks.IsEnabled(AppInfo.AutoTask);
             updateItem.Text = "Проверить обновления (сейчас " + AppInfo.Version + ", zapret " + ZapretUpdater.LocalVersion(paths) + ")";
             foreach (ToolStripMenuItem t in themeItem.DropDownItems) t.Checked = (string)t.Tag == Theme.Mode;
+            foreach (ToolStripMenuItem t in scaleItem.DropDownItems) t.Checked = (string)t.Tag == (settings.Get("scale") ?? "100");
 
             // Выбор конфига вручную: все general*.bat, текущий отмечен
             manualItem.DropDownItems.Clear();
@@ -491,7 +549,7 @@ namespace ZapretTray
                 // Настоящий пинг, как в играх: параллельно, чтобы один молчащий сайт не задерживал остальные
                 var icmp = checks.Select(u => Task.Factory.StartNew(() => IcmpMs(u.Replace("https://", "")), TaskCreationOptions.LongRunning)).ToList();
                 var opened = SiteCheck.RunAll(checks.Concat(gameUrls), HealthTimeoutSec);
-                return Tuple.Create(opened, vpn != null, icmp.Select(p => p.Result).ToList());
+                return Tuple.Create(opened, vpn != null, PingsWithFallback(icmp, opened));
             }).ContinueWith(t => OnUi(() =>
             {
                 healthChecking = false;
@@ -520,7 +578,9 @@ namespace ZapretTray
                 discordTime = TimesOf(main[1], ping[1]);
                 sitesTime = SitesTimeOf(mine, ping.Skip(MainSites.Length));
                 healthProblem = main.Any(x => !x.Opened);
+                for (int k = 0; k < serviceIp.Length; k++) if (main[k].RemoteIp != null) serviceIp[k] = main[k].RemoteIp;
                 healthVpn = t.Result.Item2;
+                if (!healthVpn && main.Any(x => x.DnsProblem)) AutoDnsFix();
                 healthAt = DateTime.UtcNow;
                 UpdateLabels();
                 RunPendingTiles();
@@ -597,7 +657,7 @@ namespace ZapretTray
                 // Адреса игр - не сайты, пинг у них считается отдельно
                 var icmp = tile == 2 ? new List<Task<long>>() : urls.Select(u => Task.Factory.StartNew(() => IcmpMs(u.Replace("https://", "")), TaskCreationOptions.LongRunning)).ToList();
                 var opened = SiteCheck.RunAll(urls, HealthTimeoutSec);
-                return Tuple.Create(opened, icmp.Select(p => p.Result).ToList());
+                return Tuple.Create(opened, PingsWithFallback(icmp, opened));
             }).ContinueWith(t => OnUi(() =>
             {
                 tileChecking[tile] = false;
@@ -679,6 +739,15 @@ namespace ZapretTray
         static string CountMark(int ok, int total)
         {
             return ok == total ? "✓" : ok + "/" + total;
+        }
+
+        // Пинг по имени не вышел (например, DNS провайдера не знает YouTube): пингуем адрес, к которому подключился curl
+        static List<long> PingsWithFallback(List<Task<long>> icmp, List<SiteResult> opened)
+        {
+            var result = icmp.Select(p => p.Result).ToList();
+            for (int i = 0; i < result.Count && i < opened.Count; i++)
+                if (result[i] < 0 && opened[i].RemoteIp != null) result[i] = IcmpMs(opened[i].RemoteIp);
+            return result;
         }
 
         static long IcmpMs(string host)
@@ -795,27 +864,131 @@ namespace ZapretTray
             rxPrev = rx;
             txPrev = tx;
             speedAt = now;
+            // Для графика - средняя скорость за 10 секунд
+            if (rxSample < 0) { rxSample = rx; rxSampleAt = now; }
+            else if ((now - rxSampleAt).TotalSeconds >= (history[4].Count < 15 ? 2 : 10))
+            {
+                AddHistory(4, (long)(Math.Max(0, rx - rxSample) / (now - rxSampleAt).TotalSeconds));
+                rxSample = rx;
+                rxSampleAt = now;
+            }
 
             UpdateGamePing(now);
 
-            // Пинг - в фоне раз в 10 секунд, чтобы не подвешивать меню
-            if (!pinging && (now - pingAt).TotalSeconds >= 10)
+            // Пинг - в фоне раз в 10 секунд, чтобы не подвешивать меню. Заодно YouTube, Discord и мои сайты - для графиков в плитках
+            // Первые полминуты - каждые 2 секунды, чтобы графики появились сразу
+            if (!pinging && (now - pingAt).TotalSeconds >= (history[5].Count < 15 ? 2 : 10))
             {
                 pinging = true;
                 pingAt = now;
+                var fallback = serviceIp.ToArray();
+                var mine = UserSites().Take(8).Select(u => u.Replace("https://", "")).ToList();
+                var game = GameHost();
+                var hosts = new[] { "8.8.8.8" }.Concat(MainSites.Select(u => u.Replace("https://", ""))).Concat(new[] { game ?? "" }).Concat(mine).ToList();
                 Task.Factory.StartNew(() =>
                 {
-                    try
-                    {
-                        using (var p = new System.Net.NetworkInformation.Ping())
-                        {
-                            var r = p.Send("8.8.8.8", 2000);
-                            return r.Status == System.Net.NetworkInformation.IPStatus.Success ? r.RoundtripTime : -1;
-                        }
-                    }
-                    catch { return -1L; }
-                }).ContinueWith(t => OnUi(() => { pingMs = t.Result; pinging = false; }));
+                    var r = hosts.Select(h => Task.Factory.StartNew(() => FirstReply(h), TaskCreationOptions.LongRunning)).ToList().Select(x => x.Result).ToList();
+                    for (int k = 0; k < fallback.Length; k++)
+                        if (r[k + 1] < 0 && fallback[k] != null) r[k + 1] = IcmpMs(fallback[k]);
+                    var replied = r.Skip(4).Where(v => v >= 0).ToList();
+                    return new[] { r[0], r[1], r[2], mine.Count == 0 ? -2 : replied.Count > 0 ? (long)replied.Average() : -1, game == null ? -2 : r[3] };
+                }).ContinueWith(t => OnUi(() =>
+                {
+                    pinging = false;
+                    if (t.IsFaulted) return;
+                    pingMs = t.Result[0];
+                    AddHistory(5, t.Result[0]);
+                    AddHistory(0, t.Result[1]);
+                    AddHistory(1, t.Result[2]);
+                    if (t.Result[3] == -2) ClearHistory(3); else AddHistory(3, t.Result[3]);
+                    if (t.Result[4] == -2) ClearHistory(2); else AddHistory(2, t.Result[4]);
+                }));
             }
+        }
+
+        // Куда пинговать для графика игр: сервер запущенной игры, иначе последний сервер включённой игры, иначе адрес встроенной игры
+        string GameHost()
+        {
+            var list = games.Games.ToList();
+            var running = list.FirstOrDefault(g => g.Enabled && g.LastServer != null && gamesRunning.Contains(g.Exe));
+            if (running != null) return running.LastServer;
+            var known = list.FirstOrDefault(g => g.Enabled && g.LastServer != null);
+            if (known != null) return known.LastServer;
+            var preset = EnabledPresets().FirstOrDefault();
+            // Не все адреса игры отвечают на пинг (embark.games молчит): пробуем по очереди, через |
+            return preset != null && preset.Item2.Length > 0 ? string.Join("|", preset.Item2) : null;
+        }
+
+        // Несколько адресов через | - пинг первого, кто ответил
+        static long FirstReply(string hosts)
+        {
+            foreach (var h in hosts.Split('|'))
+            {
+                if (h.Length == 0) continue;
+                long ms = IcmpMs(h);
+                if (ms >= 0) return ms;
+            }
+            return -1;
+        }
+
+        void AddHistory(int tile, long value)
+        {
+            var now = DateTime.UtcNow;
+            history[tile].Add(value);
+            historyAt[tile].Add(now);
+            // Храним час: и по числу замеров, и по времени (после перезапуска старые замеры дожидаются своей очереди)
+            while (history[tile].Count > HistoryMax || (historyAt[tile].Count > 0 && (now - historyAt[tile][0]).TotalHours > 1))
+            {
+                history[tile].RemoveAt(0);
+                historyAt[tile].RemoveAt(0);
+            }
+            // Раз в минуту на диск: обновление и выключение компьютера закрывают программу без спроса
+            if ((now - historySaved).TotalSeconds >= 60) SaveHistory();
+        }
+
+        void ClearHistory(int tile)
+        {
+            history[tile].Clear();
+            historyAt[tile].Clear();
+        }
+
+        // Графики переживают перезапуск: utils\graphs.txt, строки "плитка время значение". Только числа замеров
+        string HistoryFile { get { return Path.Combine(paths.Utils, "graphs.txt"); } }
+
+        void SaveHistory()
+        {
+            historySaved = DateTime.UtcNow;
+            try
+            {
+                var lines = new List<string>();
+                for (int i = 0; i < history.Length; i++)
+                    for (int k = 0; k < history[i].Count; k++)
+                        lines.Add(i + " " + historyAt[i][k].Ticks + " " + history[i][k]);
+                Util.WriteLinesAtomic(HistoryFile, lines);
+            }
+            catch (Exception ex) { Logger.Write("графики: " + ex.Message); }
+        }
+
+        void LoadHistory()
+        {
+            try
+            {
+                if (!File.Exists(HistoryFile)) return;
+                var now = DateTime.UtcNow;
+                foreach (var line in File.ReadAllLines(HistoryFile))
+                {
+                    var p = line.Split(' ');
+                    int tile;
+                    long ticks, value;
+                    if (p.Length != 3 || !int.TryParse(p[0], out tile) || tile < 0 || tile >= history.Length
+                        || !long.TryParse(p[1], out ticks) || !long.TryParse(p[2], out value)) continue;
+                    var at = new DateTime(ticks, DateTimeKind.Utc);
+                    if (at > now || (now - at).TotalHours > 1) continue;
+                    history[tile].Add(value);
+                    historyAt[tile].Add(at);
+                }
+            }
+            catch (Exception ex) { Logger.Write("графики: " + ex.Message); }
         }
 
         // Настоящий пинг до сервера игры, пока она запущена. Сервер берём из соединений самой игры
@@ -864,6 +1037,25 @@ namespace ZapretTray
             tray.ShowBalloonTip(5000, AppInfo.Name, text, icon);
         }
 
+        bool RanBefore()
+        {
+            try { return File.ReadLines(Path.Combine(paths.Utils, "tray.log")).Count(l => l.Contains("запуск, версия")) > 1; }
+            catch { return false; }
+        }
+
+        bool crashOffered;
+
+        void OnCrash(Exception ex)
+        {
+            // В журнал - тип, текст и где случилось (имена методов, без путей к файлам)
+            var where = (ex.StackTrace ?? "").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).Take(4)
+                .Select(l => { int at = l.IndexOf(" in "); return at > 0 ? l.Substring(0, at) : l; });
+            Logger.Write("сбой: " + ex.GetType().Name + ": " + ex.Message + " | " + string.Join(" | ", where));
+            if (crashOffered || !BugReport.Available) return;
+            crashOffered = true;
+            Offer("В программе что-то сломалось, но она работает дальше.\nНажми, чтобы отправить баг разработчику.", SendBug);
+        }
+
         // Уведомление, по клику на которое что-то произойдёт
         void Offer(string text, Action onClick)
         {
@@ -898,7 +1090,7 @@ namespace ZapretTray
             {
                 if (wait != waitGen) return;   // пока ждали, нажали выключение или другой подбор
                 busy = false;
-                if (wantOn) RunSelect("fast", false, false);
+                if (wantOn) RunSelect("fast", false, false, true);
             }));
         }
 
@@ -929,7 +1121,7 @@ namespace ZapretTray
         }
 
         // Подбор конфига в фоне (Selector). false - подбор не запустился
-        bool RunSelect(string mode, bool visible, bool notifyResult)
+        bool RunSelect(string mode, bool visible, bool notifyResult, bool startup = false)
         {
             if (busy) return false;
             if (Util.ServiceExists("zapret"))
@@ -954,7 +1146,7 @@ namespace ZapretTray
                 lock (selectLock)
                 {
                     if (gen != selectGen) return Tuple.Create(false, (string)null);
-                    try { ok = Selector.Run(paths, best, () => gen != selectGen, text => OnUi(() => { if (gen == selectGen) { busyText = text; UpdateLabels(); } }), out error); }
+                    try { ok = Selector.Run(paths, best, startup && vpn != null, () => gen != selectGen, text => OnUi(() => { if (gen == selectGen) { busyText = text; UpdateLabels(); } }), out error); }
                     catch (Exception ex) { ok = false; error = ex.Message; }
                 }
                 return Tuple.Create(ok, error);
@@ -1009,8 +1201,12 @@ namespace ZapretTray
                     return;
                 }
                 selectFailShown = true;
-                if (t.Result == 2)
+                if (t.Result == 2 && !DnsFix.IsApplied(paths) && settings.Get("dnsauto") == null) AutoDnsFix();
+                else if (t.Result == 2)
                     Offer("Не могу найти рабочий конфиг: DNS Windows не находит адреса. Нажми, чтобы исправить DNS.", ApplyDnsFix);
+                // Ссылка для багов вшита - одним нажатием отчёт уходит разработчику, человеку ничего объяснять не надо
+                else if (BugReport.Available)
+                    Offer("Не могу найти рабочий конфиг" + (error != null ? ": " + error : "") + ".\nНажми, чтобы отправить баг разработчику.", SendBug);
                 else
                     Notify("Не могу найти рабочий конфиг" + (error != null ? ": " + error : "") + ".\nПопробуй «Подключение» → «Что-то не работает».", ToolTipIcon.Warning);
             }));
@@ -1082,7 +1278,7 @@ namespace ZapretTray
                 {
                     watchFailedOnce = false;
                     watchTimer.Interval = WatchIntervalMs;
-                    if (r == 3) OfferDnsFix();
+                    if (r == 3) AutoDnsFix();
                 }
                 else if (r == 2 || watchFailedOnce)
                 {
@@ -1441,17 +1637,53 @@ namespace ZapretTray
             if (values.TryGetValue(SettingsFile.Autostart, out v)) SetAutostart(v == "1");
         }
 
-        // Само предлагает один раз за запуск: настройки сети меняем только по клику
-        void OfferDnsFix()
+        // DNS не находит YouTube: провайдер подменяет ответы, конфиг тут не поможет. Включаем защищённый DNS сами, один раз.
+        // Не трогаем, если пользователь сам вернул DNS (dnsauto=off) или прошлая попытка не помогла (dnsauto=failed). С VPN DNS не меняем
+        void AutoDnsFix()
         {
-            if (dnsOffered || DnsFix.IsApplied(paths)) return;
-            dnsOffered = true;
-            Offer("DNS Windows не находит YouTube, zapret тут ни при чём. Нажми, чтобы исправить.", ApplyDnsFix);
+            if (dnsAutoTried || dnsBusy || DnsFix.IsApplied(paths) || settings.Get("dnsauto") != null) return;
+            var vpn = Util.RunningVpn();
+            if (vpn != null) return;
+            dnsAutoTried = true;
+            dnsBusy = true;
+            Logger.Write("DNS: YouTube не находится, включаю защищённый DNS сам");
+            Task.Factory.StartNew(() =>
+            {
+                string message;
+                bool ok;
+                try { ok = DnsFix.Apply(paths, out message); }
+                catch (Exception ex) { ok = false; message = ex.Message; }
+                return Tuple.Create(ok, message);
+            }).ContinueWith(t => OnUi(() =>
+            {
+                dnsBusy = false;
+                if (!t.Result.Item1)
+                {
+                    settings.Set("dnsauto", "failed");
+                    Logger.Write("DNS: сам включить не смог: " + t.Result.Item2);
+                    Notify("YouTube не находится: провайдер подменяет DNS. Исправить сам не смог: " + t.Result.Item2, ToolTipIcon.Warning, true);
+                    return;
+                }
+                Notify("YouTube не находился: провайдер подменяет DNS. Включил защищённый DNS"
+                    + (DnsFix.WindowsBuild() < 22000 ? " в Chrome, Edge и Firefox: закрой браузер полностью и открой заново." : ".")
+                    + "\nВернуть: «Подключение» → «Вернуть DNS как было».", ToolTipIcon.Info, true);
+                RecheckHealthNow();
+                RefreshMenu();
+            }));
         }
 
-        void ApplyDnsFix() { RunDnsAction(DnsFix.Apply); }
+        void ApplyDnsFix()
+        {
+            settings.Set("dnsauto", null);
+            RunDnsAction(DnsFix.Apply);
+        }
 
-        void UndoDnsFix() { RunDnsAction(DnsFix.Restore); }
+        // Сам вернул - значит, не надо: больше автоматически не включаем
+        void UndoDnsFix()
+        {
+            settings.Set("dnsauto", "off");
+            RunDnsAction(DnsFix.Restore);
+        }
 
         delegate bool DnsAction(AppPaths paths, out string message);
 
@@ -1501,6 +1733,53 @@ namespace ZapretTray
                     Notify("Не удалось скопировать. Отчёт на рабочем столе: zapret-report.txt.", ToolTipIcon.Warning);
                 }
             }));
+        }
+
+        // Отправить баг: человек пишет пару слов, отчёт уходит в Discord. Не ушло - отчёт в буфере, как у "Что-то не работает"
+        void SendBug()
+        {
+            var comment = AskBugComment();
+            if (comment == null) return;
+            var who = "ПК " + BugReport.MachineId(settings);
+            bugItem.Enabled = false;
+            Notify("Проверяю всё и отправляю отчёт, это до минуты...", ToolTipIcon.Info, true);
+            var status = StatusText();
+            var sites = UserSites();
+            Task.Factory.StartNew(() =>
+            {
+                var text = ProblemReport.Build(paths, status, sites);
+                string error;
+                bool ok = BugReport.Send(BugReport.Webhook, comment, text, out error, who);
+                return Tuple.Create(ok, error, text);
+            }).ContinueWith(t => OnUi(() =>
+            {
+                bugItem.Enabled = true;
+                if (t.IsFaulted)
+                {
+                    Logger.Write("баг: " + t.Exception.InnerException.Message);
+                    Notify("Не удалось собрать отчёт: " + t.Exception.InnerException.Message, ToolTipIcon.Warning);
+                    return;
+                }
+                if (t.Result.Item1)
+                {
+                    Logger.Write("баг: отчёт отправлен");
+                    Notify("Отправлено, спасибо! Разработчик посмотрит.", ToolTipIcon.Info, true);
+                    return;
+                }
+                Logger.Write("баг: не отправился: " + t.Result.Item2);
+                try
+                {
+                    Clipboard.SetText(t.Result.Item3);
+                    Notify("Отправить не получилось (" + t.Result.Item2 + "). Отчёт скопирован: вставь его в чат, Ctrl+V.", ToolTipIcon.Warning);
+                }
+                catch { Notify("Отправить не получилось. Отчёт на рабочем столе: zapret-report.txt.", ToolTipIcon.Warning); }
+            }));
+        }
+
+        // null - передумал
+        string AskBugComment()
+        {
+            using (var d = new BugDialog()) return d.ShowDialog() == DialogResult.OK ? d.Comment : null;
         }
 
         static readonly Regex ConfigName = new Regex(@"^general.*\.bat$", RegexOptions.IgnoreCase);
@@ -1870,6 +2149,7 @@ namespace ZapretTray
 
         void ExitApp()
         {
+            SaveHistory();
             if (panel != null) panel.Close();
             TurnOff();
             flows.Stop();

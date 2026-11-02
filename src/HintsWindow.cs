@@ -75,7 +75,7 @@ namespace ZapretTray
 
         static readonly Hint[] Auto =
         {
-            new Hint("shield", Green, "Сама чинит", "Раз в 10 минут и после сна проверяет YouTube и Discord. Сломалось: подберёт другой конфиг"),
+            new Hint("shield", Green, "Сама чинит", "Проверяет YouTube и Discord. Сломалось: сменит конфиг или включит защищённый DNS"),
             new Hint("list", Teal, "Сама запоминает", "Помнит рабочие конфиги и проверяет их первыми, поэтому включается быстро"),
             new Hint("refresh", Blue, "Сама обновляется", "Раз в день проверяет обновления. Твои настройки остаются на месте"),
             new Hint("bell", Orange, "Когда придёт уведомление", "Когда сама не справилась, например не нашла рабочий конфиг. Остальное делает молча"),
@@ -231,14 +231,40 @@ namespace ZapretTray
     {
         public string Cue;
         public Color CueColor;
+        public bool CueAtTop;   // многострочное поле: подсказка сверху, а не посередине
+        public bool HideCueOnFocus;   // нажал в поле, чтобы писать, - подсказка уходит
+
+        // Поле перерисовывает только строку с курсором - остальные строки подсказки оставались бы на экране
+        protected override void OnGotFocus(EventArgs e)
+        {
+            base.OnGotFocus(e);
+            if (HideCueOnFocus) Invalidate();
+        }
+
+        protected override void OnLostFocus(EventArgs e)
+        {
+            base.OnLostFocus(e);
+            if (HideCueOnFocus) Invalidate();
+        }
+
+        protected override void OnTextChanged(EventArgs e)
+        {
+            base.OnTextChanged(e);
+            if (Cue != null) Invalidate();
+        }
 
         protected override void WndProc(ref Message m)
         {
             base.WndProc(ref m);
-            if (m.Msg != 0xF || TextLength > 0 || Cue == null) return;   // WM_PAINT
+            if (m.Msg != 0xF || TextLength > 0 || Cue == null || HideCueOnFocus && Focused) return;   // WM_PAINT
+            // Подсказка чуть правее начала строки: иначе мигающий курсор стоит прямо на первой букве
+            var r = ClientRectangle;
+            r.X += 4;
+            r.Width -= 4;
             using (var g = CreateGraphics())
-                TextRenderer.DrawText(g, Cue, Font, ClientRectangle, CueColor, BackColor,
-                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(g, Cue, Font, r, CueColor, BackColor, CueAtTop
+                    ? TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak | TextFormatFlags.NoPadding
+                    : TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
         }
     }
 
@@ -338,7 +364,15 @@ namespace ZapretTray
             box.BackColor = fill;
             box.ForeColor = P.Text;
             box.CueColor = P.SubText;
-            box.SetBounds(field.Left + 38, field.Top + 9, field.Width - 50, 18);
+            // Поле ввода - настоящее окно поверх рисунка: его место и шрифт переводим в масштаб окна
+            var panel = host as ControlPanel;
+            var place = new Rectangle(field.Left + 38, field.Top + 9, field.Width - 50, 18);
+            if (panel != null)
+            {
+                place = panel.ToDevice(place);
+                box.Font = TextRenderer.Scaled(MenuKit.Font, panel.FontScale);
+            }
+            box.SetBounds(place.X, place.Y, place.Width, place.Height);
 
             addButton = new Rectangle(field.Right + 10, field.Top, 120, 36);
             ControlPanel.Accent(g, addButton, 9);
@@ -413,6 +447,297 @@ namespace ZapretTray
                 break;
             }
             return false;
+        }
+    }
+
+    // Окно "Отправить баг" в стиле главного окна: без рамки Windows, своё поле и кнопки
+    class BugDialog : Form
+    {
+        const int W = 460, H = 340, Pad = 20;
+        static readonly Font TitleFont = new Font("Segoe UI Semibold", 13f);
+        readonly CueBox box = new CueBox { Multiline = true, BorderStyle = BorderStyle.None, ScrollBars = ScrollBars.None, Font = MenuKit.Font, MaxLength = 1500, CueAtTop = true, HideCueOnFocus = true,
+            Cue = "Что не так? Например: YouTube не грузит видео, Discord отваливается.\nМожно оставить пустым." };
+        readonly Rectangle field = new Rectangle(Pad, 78, W - Pad * 2, 118);
+        readonly Rectangle sendButton = new Rectangle(W - Pad - 130, H - Pad - 38, 130, 38);
+        readonly Rectangle cancelButton = new Rectangle(W - Pad - 130 - 10 - 100, H - Pad - 38, 100, 38);
+        readonly Rectangle closeButton = new Rectangle(W - 44, 10, 34, 28);
+        string hover;
+
+        static Palette P { get { return Theme.Current; } }
+
+        public string Comment { get { return box.Text; } }
+
+        public BugDialog()
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.CenterScreen;
+            ShowInTaskbar = false;
+            TopMost = true;
+            DoubleBuffered = true;
+            KeyPreview = true;
+            AutoScaleMode = AutoScaleMode.None;
+            ClientSize = new Size(W, H);
+            Text = "Отправить баг";
+            Icon = Theme.AppIcon();
+            BackColor = P.Back;
+            var fill = ControlPanel.Mix(P.Back, P.Card, 0.6f);
+            box.BackColor = fill;
+            box.ForeColor = P.Text;
+            box.CueColor = P.SubText;
+            box.SetBounds(field.Left + 14, field.Top + 12, field.Width - 28, field.Height - 24);
+            box.GotFocus += (s, e) => Invalidate();
+            box.LostFocus += (s, e) => Invalidate();
+            box.TextChanged += (s, e) => Invalidate(new Rectangle(0, field.Bottom, W, 30));
+            Controls.Add(box);
+            KeyDown += (s, e) =>
+            {
+                if (e.KeyCode == Keys.Escape) Finish(DialogResult.Cancel);
+                else if (e.KeyCode == Keys.Enter && e.Control) { e.SuppressKeyPress = true; Finish(DialogResult.OK); }
+            };
+            // Поле не в фокусе сразу: пусть подсказку видно, пока не нажал в поле
+            Shown += (s, e) => { Theme.RoundCorners(this); ActiveControl = null; };
+            // Кликнул мимо - окно закрывается, как и сама панель
+            Deactivate += (s, e) => Finish(DialogResult.Cancel);
+        }
+
+        bool finished;
+
+        void Finish(DialogResult result)
+        {
+            if (finished) return;
+            finished = true;
+            DialogResult = result;
+            Close();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(P.Back);
+            ControlPanel.Glow(g, new Rectangle(W - 260, -200, 440, 360), P.Check, 36);
+            using (var pen = new Pen(P.Border)) g.DrawRectangle(pen, 0, 0, W - 1, H - 1);
+
+            ControlPanel.Badge(g, new Rectangle(Pad, Pad, 40, 40), Color.FromArgb(14, 136, 232), "load");
+            const TextFormatFlags Line = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis;
+            TextRenderer.DrawText(g, "Отправить баг", TitleFont, new Rectangle(Pad + 54, Pad - 2, 300, 26), P.Text, Line);
+            TextRenderer.DrawText(g, "Отчёт о соединении сам уйдёт разработчику", MenuKit.Small, new Rectangle(Pad + 54, Pad + 22, 320, 20), P.SubText, Line);
+
+            if (hover == "close") ControlPanel.Box(g, closeButton, Theme.Bad, 7);
+            using (var p = new Pen(hover == "close" ? Color.White : P.SubText, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                int cx = closeButton.Left + closeButton.Width / 2, cy = closeButton.Top + closeButton.Height / 2;
+                g.DrawLine(p, cx - 5, cy - 5, cx + 5, cy + 5);
+                g.DrawLine(p, cx + 5, cy - 5, cx - 5, cy + 5);
+            }
+
+            ControlPanel.Box(g, field, box.BackColor, 10);
+            using (var path = ThemedRenderer.RoundRect(field, 10))
+            using (var pen = new Pen(box.Focused ? P.Check : P.Separator)) g.DrawPath(pen, path);
+            TextRenderer.DrawText(g, box.TextLength + " / " + box.MaxLength, MenuKit.Small, new Rectangle(field.Right - 120, field.Bottom + 4, 120, 20), P.Disabled,
+                TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+            // Правило программы: никаких личных данных. Пишем прямо, что уйдёт и чего не будет
+            TextRenderer.DrawText(g, "Твоих личных данных в отчёте нет", MenuKit.Bold, new Rectangle(Pad, field.Bottom + 6, 300, 20), Theme.On, Line);
+            TextRenderer.DrawText(g, "В любом случае уйдёт технический отчёт: что открылось, настройки и журнал программы.", MenuKit.Small, new Rectangle(Pad, field.Bottom + 28, W - Pad * 2, 40), P.SubText,
+                TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak);
+
+            const TextFormatFlags Center = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+            ControlPanel.Card(g, cancelButton, hover == "cancel" ? P.Hover : P.Card, 10);
+            TextRenderer.DrawText(g, "Отмена", MenuKit.Bold, cancelButton, P.Text, Center);
+            ControlPanel.Accent(g, sendButton, 10);
+            if (hover == "send") using (var b = new SolidBrush(Color.FromArgb(40, Color.White))) using (var path = ThemedRenderer.RoundRect(sendButton, 10)) g.FillPath(b, path);
+            TextRenderer.DrawText(g, "Отправить", MenuKit.Bold, sendButton, Color.White, Center);
+            TextRenderer.DrawText(g, "Ctrl+Enter", MenuKit.Small, new Rectangle(Pad, sendButton.Top, 160, sendButton.Height), P.Disabled, Line);
+        }
+
+        string HitTest(Point p)
+        {
+            if (sendButton.Contains(p)) return "send";
+            if (cancelButton.Contains(p)) return "cancel";
+            if (closeButton.Contains(p)) return "close";
+            return null;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            var hit = HitTest(e.Location);
+            if (field.Contains(e.Location)) Cursor = Cursors.IBeam;
+            else Cursor = hit != null ? Cursors.Hand : Cursors.Default;
+            if (hit == hover) return;
+            hover = hit;
+            Invalidate();
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            hover = null;
+            Invalidate();
+        }
+
+        [DllImport("user32.dll")] static extern bool ReleaseCapture();
+        [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left) return;
+            if (field.Contains(e.Location)) { box.Focus(); return; }
+            // Нажал мимо поля - поле теряет фокус, и пустому возвращается подсказка
+            ActiveControl = null;
+            Invalidate();
+            var hit = HitTest(e.Location);
+            if (hit == "send") Finish(DialogResult.OK);
+            else if (hit == "cancel" || hit == "close") Finish(DialogResult.Cancel);
+            else
+            {
+                // Тащим окно за любое пустое место
+                ReleaseCapture();
+                SendMessage(Handle, 0xA1, (IntPtr)2, IntPtr.Zero);
+            }
+        }
+    }
+
+    // "Что нового": один раз после обновления. Пункты для каждой версии пишем здесь; нет пунктов - окна нет.
+    // Version = Welcome - то же окно для первой установки: коротко, что где
+    class WhatsNewDialog : Form
+    {
+        class Item
+        {
+            public string Icon, Title, Note;
+            public Color Color;
+            public Item(string icon, Color color, string title, string note) { Icon = icon; Color = color; Title = title; Note = note; }
+        }
+
+        static readonly Dictionary<string, Item[]> Notes = new Dictionary<string, Item[]>
+        {
+            { "0.7", new[] {
+                new Item("ping", Color.FromArgb(142, 84, 233), "Графики за час", "В каждой плитке. Наведи мышь - покажет число"),
+                new Item("load", Color.FromArgb(14, 136, 232), "Отправить баг", "Кнопка на главной, без личных данных"),
+                new Item("monitor", Color.FromArgb(96, 110, 140), "Размер окна", "Ползунок в настройках, от 75 до 200%"),
+                new Item("dns", Color.FromArgb(0, 150, 160), "DNS чинится сам", "Если провайдер подменяет адрес YouTube"),
+                new Item("shield", Color.FromArgb(46, 160, 67), "Спокойнее с VPN", "Конфиг больше не скачет при запуске"),
+                new Item("report", Color.FromArgb(230, 126, 34), "Понятнее отчёт", "Сразу пишет, в чём дело и что нажать") } },
+            { Welcome, new[] {
+                new Item("power", Color.FromArgb(46, 160, 67), "Всё уже работает", "Программа сама подобрала настройки"),
+                new Item("ping", Color.FromArgb(142, 84, 233), "Плитки на главной", "Галочка - открывается. Нажми плитку - проверит заново"),
+                new Item("games", Color.FromArgb(230, 126, 34), "Мои игры", "Добавь игру - обход включится и для неё"),
+                new Item("load", Color.FromArgb(14, 136, 232), "Что-то не так?", "«Отправить баг» - и разработчик посмотрит") } },
+        };
+
+        public const string Welcome = "welcome";
+
+        public static bool Has(string version) { return Notes.ContainsKey(version); }
+
+        const int W = 460, Pad = 20, ListTop = 84, Row = 62;
+        static readonly Font TitleFont = new Font("Segoe UI Semibold", 13f), ItemFont = new Font("Segoe UI Semibold", 10.5f);
+        readonly Item[] items;
+        readonly string version;
+        Rectangle okButton, closeButton;
+        string hover;
+
+        static Palette P { get { return Theme.Current; } }
+
+        public WhatsNewDialog(string version)
+        {
+            this.version = version;
+            items = Notes[version];
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.CenterScreen;
+            ShowInTaskbar = true;
+            TopMost = true;
+            DoubleBuffered = true;
+            KeyPreview = true;
+            AutoScaleMode = AutoScaleMode.None;
+            int h = ListTop + items.Length * Row + 70;
+            ClientSize = new Size(W, h);
+            okButton = new Rectangle(W - Pad - 130, h - Pad - 38, 130, 38);
+            closeButton = new Rectangle(W - 44, 10, 34, 28);
+            Text = version == Welcome ? "Zapret Tray" : "Что нового";
+            Icon = Theme.AppIcon();
+            BackColor = P.Back;
+            KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape || e.KeyCode == Keys.Enter) Close(); };
+            Shown += (s, e) => Theme.RoundCorners(this);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(P.Back);
+            ControlPanel.Glow(g, new Rectangle(W - 260, -200, 440, 360), P.Check, 36);
+            using (var pen = new Pen(P.Border)) g.DrawRectangle(pen, 0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
+
+            const TextFormatFlags Line = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis;
+            // Логотип программы, как в колонке главного окна
+            ControlPanel.Glow(g, new Rectangle(Pad - 12, Pad - 12, 64, 64), Theme.On, 80);
+            ControlPanel.Box(g, new Rectangle(Pad, Pad, 40, 40), Theme.On, 20);
+            TextRenderer.DrawText(g, "Z", TitleFont, new Rectangle(Pad, Pad, 40, 40), Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            bool welcome = version == Welcome;
+            TextRenderer.DrawText(g, welcome ? "Привет! Это Zapret Tray" : "Обновлено до " + version, TitleFont, new Rectangle(Pad + 54, Pad - 2, 330, 26), P.Text, Line);
+            TextRenderer.DrawText(g, welcome ? "Коротко, что тут где" : "Вот что появилось", MenuKit.Small, new Rectangle(Pad + 54, Pad + 22, 300, 20), P.SubText, Line);
+
+            if (hover == "close") ControlPanel.Box(g, closeButton, Theme.Bad, 7);
+            using (var p = new Pen(hover == "close" ? Color.White : P.SubText, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                int cx = closeButton.Left + closeButton.Width / 2, cy = closeButton.Top + closeButton.Height / 2;
+                g.DrawLine(p, cx - 5, cy - 5, cx + 5, cy + 5);
+                g.DrawLine(p, cx + 5, cy - 5, cx - 5, cy + 5);
+            }
+
+            // Пункты одним спокойным списком
+            var list = new Rectangle(Pad, ListTop, W - Pad * 2, items.Length * Row);
+            ControlPanel.Card(g, list, P.Card, 12);
+            for (int i = 0; i < items.Length; i++)
+            {
+                int y = ListTop + i * Row;
+                if (i > 0) using (var pen = new Pen(P.Separator)) g.DrawLine(pen, list.Left + 62, y, list.Right - 14, y);
+                ControlPanel.Badge(g, new Rectangle(list.Left + 14, y + 13, 36, 36), items[i].Color, items[i].Icon);
+                TextRenderer.DrawText(g, items[i].Title, ItemFont, new Rectangle(list.Left + 62, y + 9, list.Width - 76, 22), P.Text, Line);
+                TextRenderer.DrawText(g, items[i].Note, MenuKit.Small, new Rectangle(list.Left + 62, y + 31, list.Width - 76, 20), P.SubText, Line);
+            }
+
+            ControlPanel.Accent(g, okButton, 10);
+            if (hover == "ok") using (var b = new SolidBrush(Color.FromArgb(40, Color.White))) using (var path = ThemedRenderer.RoundRect(okButton, 10)) g.FillPath(b, path);
+            TextRenderer.DrawText(g, "Понятно", MenuKit.Bold, okButton, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+            TextRenderer.DrawText(g, "Всё это есть в «Подсказках»", MenuKit.Small, new Rectangle(Pad, okButton.Top, 240, okButton.Height), P.Disabled, Line);
+        }
+
+        string HitTest(Point p)
+        {
+            if (okButton.Contains(p)) return "ok";
+            if (closeButton.Contains(p)) return "close";
+            return null;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            var hit = HitTest(e.Location);
+            Cursor = hit != null ? Cursors.Hand : Cursors.Default;
+            if (hit == hover) return;
+            hover = hit;
+            Invalidate();
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            hover = null;
+            Invalidate();
+        }
+
+        [DllImport("user32.dll")] static extern bool ReleaseCapture();
+        [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left) return;
+            if (HitTest(e.Location) != null) { Close(); return; }
+            ReleaseCapture();
+            SendMessage(Handle, 0xA1, (IntPtr)2, IntPtr.Zero);
         }
     }
 }

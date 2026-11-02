@@ -1,0 +1,55 @@
+using System;using System.Drawing;using System.IO;using System.Linq;using System.Reflection;using System.Windows.Forms;using System.Collections.Generic;using System.Diagnostics;using System.Runtime.InteropServices;using System.IO.Compression;
+namespace ZapretTray{
+static class U{
+ static int pass,fail;static List<string> log=new List<string>();
+ static void Ok(bool c,string n){if(c)pass++;else fail++;log.Add((c?"OK   ":"FAIL ")+n);}
+ [DllImport("user32.dll")]static extern int GetGuiResources(IntPtr h,int k);
+ static object Call(Type t,string m,params object[] a){return t.GetMethod(m,BindingFlags.NonPublic|BindingFlags.Static|BindingFlags.Public).Invoke(null,a);}
+ static void Entry(string s,string want,bool ip){string v;bool i;bool r=Util.ParseEntry(s,out v,out i);Ok(want==null?!r:(r&&v==want&&i==ip),"ввод сайта '"+s+"' -> "+(r?v:"отказ"));}
+ [STAThread]static void Main(string[] a){string zip=a[0];Application.EnableVisualStyles();
+  try{Logic();Sign(zip);Package(zip);Settings();Hints();Stress();}catch(Exception e){Ok(false,"ТЕСТ УПАЛ: "+e);}
+  File.WriteAllLines("result.txt",log.Concat(new[]{"ИТОГО ok="+pass+" fail="+fail}));}
+ static void Logic(){
+  Entry("youtube.com","youtube.com",false);Entry("https://YouTube.com/watch?v=1","youtube.com",false);Entry("*.site.org","site.org",false);Entry("site.org:8443","site.org",false);
+  Entry("1.2.3.4","1.2.3.4",true);Entry("1.2.3.0/24","1.2.3.0/24",true);Entry("1.2.3.0/4",null,false);Entry("",null,false);Entry("   ",null,false);Entry("не сайт",null,false);Entry("../../windows",null,false);Entry("a b c",null,false);Entry("www.youtube.com","youtube.com",false);Entry("HTTPS://WWW.YouTube.com/","youtube.com",false);Entry("http://www.youtube.com/watch?v=abc&t=12#x","youtube.com",false);Entry("youtube.com?x=1","youtube.com",false);Entry("youtube.com#top","youtube.com",false);Entry("//youtube.com","youtube.com",false);Entry("\"https://youtube.com/\"","youtube.com",false);Entry("<youtube.com>","youtube.com",false);Entry("вот сайт youtube.com, спасибо","youtube.com",false);Entry("youtube.com.","youtube.com",false);Entry("user:pw@site.org:8080/a","site.org",false);Entry("music.youtube.com","music.youtube.com",false);Entry("www.com","www.com",false);Entry("https://1.2.3.4:443/a","1.2.3.4",true);Entry("http://1.2.3.0/24","1.2.3.0/24",true);Entry("президент.рф","xn--d1abbgf6aiiy.xn--p1ai",false);Entry("# см. example.com",null,false);Entry("foo",null,false);Entry("1.2.3",null,false);Entry("--flag=evil",null,false);
+  foreach(var c in new[]{new object[]{"0.5","0.4",true},new object[]{"0.4","0.4",false},new object[]{"0.3","0.4",false},new object[]{"0.10","0.9",true},new object[]{"abc","0.4",false},new object[]{"","0.4",false}})Ok(Updater.IsNewer((string)c[0],(string)c[1])==(bool)c[2],"версия "+c[0]+" новее "+c[1]+": "+c[2]);
+  var tc=typeof(TrayContext);var cp=typeof(ControlPanel);
+  foreach(var c in new[]{new object[]{2,2,"✓"},new object[]{1,2,"1/2"},new object[]{0,3,"0/3"}})Ok((string)Call(tc,"CountMark",c[0],c[1])==(string)c[2],"отметка "+c[0]+" из "+c[1]+" = "+c[2]);
+  Ok((int)Call(cp,"PingBars","32 мс")==4&&(int)Call(cp,"PingBars","60 мс")==3&&(int)Call(cp,"PingBars","180 мс")==2&&(int)Call(cp,"PingBars","12000 мс")==1&&(int)Call(cp,"PingBars","—")==0,"полоски пинга");
+  Func<string,double> L=s=>(double)Call(cp,"SpeedLevel",s);
+  Ok(L("↓ —")==0&&L("↓ 0 КБ/с")==0,"спидометр: нет скорости - стрелка в нуле");Ok(Math.Abs(L("↓ 8,4 МБ/с")-L("↓ 8.4 МБ/с"))<1e-9,"спидометр: запятая и точка одинаковы");Ok(L("↓ 12 КБ/с")<L("↓ 900 КБ/с")&&L("↓ 900 КБ/с")<L("↓ 8,4 МБ/с"),"спидометр: растёт со скоростью");Ok(L("↓ 99999 МБ/с")==1,"спидометр: не зашкаливает");
+ }
+ static void Sign(string zip){var d=File.ReadAllBytes(zip);var s=File.ReadAllBytes(zip+".sig");Ok(Updater.SignatureValid(d,s),"подпись настоящего архива принята");var b=(byte[])d.Clone();b[b.Length/2]^=1;Ok(!Updater.SignatureValid(b,s),"испорченный архив отвергнут");var s2=(byte[])s.Clone();s2[0]^=1;Ok(!Updater.SignatureValid(d,s2),"испорченная подпись отвергнута");Ok(!Updater.SignatureValid(d,new byte[0]),"пустая подпись отвергнута");
+  using(var rsa=new System.Security.Cryptography.RSACryptoServiceProvider(2048))Ok(!Updater.SignatureValid(d,rsa.SignData(d,"SHA256")),"подпись чужим ключом отвергнута");}
+ static void Package(string zip){using(var z=ZipFile.OpenRead(zip)){var n=z.Entries.Select(e=>e.FullName.Replace('\\','/')).ToList();foreach(var w in new[]{"Setup.exe","README.txt","files/ZapretTray.exe","files/core/bin/winws.exe"})Ok(n.Contains(w),"в архиве есть "+w);Ok(n.Any(x=>x.StartsWith("files/core/lists/")),"в архиве есть списки");Ok(!n.Any(x=>x.IndexOf("signing",StringComparison.OrdinalIgnoreCase)>=0||x.EndsWith(".xml",StringComparison.OrdinalIgnoreCase)&&x.IndexOf("key",StringComparison.OrdinalIgnoreCase)>=0),"в архиве нет ключа подписи");Ok(!n.Any(x=>x.Contains("..")),"в архиве нет выхода из папки");}}
+ static void Settings(){var dir=Path.Combine(Path.GetTempPath(),"zt-test-"+Guid.NewGuid().ToString("N"));var p=new AppPaths(dir);Directory.CreateDirectory(p.Lists);
+  try{File.WriteAllLines(p.ListGeneralUser,new[]{"mysite.com","#off embark.games","# коммент"});File.WriteAllLines(p.ListExcludeUser,new[]{"bad.com"});File.WriteAllLines(p.IpsetUser,new[]{"1.2.3.4"});
+   var g=new Game{Exe="cs2",Enabled=false};g.Subnets.Add("5.5.5.0/24");var file=Path.Combine(dir,"s.txt");
+   SettingsFile.Save(file,p,new[]{g},new Dictionary<string,string>{{"theme","dark"},{"watchdog","1"}});var r=SettingsFile.Read(file,p);
+   Ok(r.Lists["list-general-user.txt"].SequenceEqual(new[]{"mysite.com","#off embark.games"}),"перенос: сайты и выключенные игры сохранились");Ok(r.Lists["list-exclude-user.txt"].Single()=="bad.com","перенос: исключения");Ok(r.Lists["tray-ipset-user.txt"].Single()=="1.2.3.4","перенос: IP");Ok(r.Games.Single().Exe=="cs2"&&!r.Games[0].Enabled&&r.Games[0].Subnets.Contains("5.5.5.0/24"),"перенос: игра с адресами");Ok(r.Values["theme"]=="dark","перенос: тема");
+   var evil=Path.Combine(dir,"e.txt");File.WriteAllLines(evil,new[]{"ZapretTray settings 1","[settings]","evil=1","theme=dark","[list ..\\..\\Windows\\hosts]","1.2.3.4","[list other.txt]","x.com","[list list-general-user.txt]","good.com","--dpi-desync=evil","a b c","1.2.3.4","[list tray-ipset-user.txt]","notip.com","9.9.9.9","[game ..\\..\\evil|1]","8.8.8.8","[game ok|1]","127.0.0.1","192.168.0.1","8.8.4.0/24","5.5.4.0/24","garbage"});
+   r=SettingsFile.Read(evil,p);Ok(!r.Values.ContainsKey("evil")&&r.Values.ContainsKey("theme"),"чужой файл: лишние параметры отброшены");Ok(r.Lists.Keys.All(k=>k=="list-general-user.txt"||k=="tray-ipset-user.txt"),"чужой файл: нельзя записать в посторонний путь");Ok(r.Lists["list-general-user.txt"].SequenceEqual(new[]{"good.com"}),"чужой файл: мусор в сайтах отброшен");Ok(r.Lists["tray-ipset-user.txt"].SequenceEqual(new[]{"9.9.9.9"}),"чужой файл: домен в IP-списке отброшен");Ok(r.Games.Count==1&&r.Games[0].Exe=="ok","чужой файл: опасное имя игры отброшено");Ok(r.Games[0].Subnets.SetEquals(new[]{"5.5.4.0/24"}),"чужой файл: мусор и DNS-адреса в игре отброшены");
+   var notOurs=Path.Combine(dir,"n.txt");File.WriteAllText(notOurs,"hello");bool thrown=false;try{SettingsFile.Read(notOurs,p);}catch(InvalidDataException){thrown=true;}Ok(thrown,"не наш файл не принимается");
+   var empty=Path.Combine(dir,"z.txt");File.WriteAllText(empty,"");thrown=false;try{SettingsFile.Read(empty,p);}catch(InvalidDataException){thrown=true;}Ok(thrown,"пустой файл не принимается");
+   var big=Path.Combine(dir,"b.txt");using(var fs=File.Create(big))fs.SetLength(6*1024*1024);thrown=false;try{SettingsFile.Read(big,p);}catch(InvalidDataException){thrown=true;}Ok(thrown,"огромный файл не принимается");
+  }finally{try{Directory.Delete(dir,true);}catch{}}}
+ static void Hints(){var t=typeof(HintsView);const int W=ControlPanel.CardWidth;
+  foreach(var page in new[]{"Broken","Setup","Auto"}){var list=(Array)t.GetField(page,BindingFlags.NonPublic|BindingFlags.Static).GetValue(null);using(var card=new Font("Segoe UI Semibold",11f))foreach(var h in list){var ty=h.GetType();string title=(string)ty.GetField("Title").GetValue(h),note=(string)ty.GetField("Note").GetValue(h);var st=(string[])ty.GetField("Steps").GetValue(h);
+    Ok(TextRenderer.MeasureText(title,card).Width<=W-62,"подсказка влезает, заголовок: "+title);
+    if(st.Length>0){int w=st.Sum(s=>TextRenderer.MeasureText(s,MenuKit.Small).Width+12)+(st.Length-1)*22;Ok(w<=W-28,"подсказка влезает, шаги: "+title+" ("+w+" из "+(W-28)+")");Ok(TextRenderer.MeasureText(note,MenuKit.Small).Width<=W-28,"подсказка влезает, пояснение: "+title);}
+    else{var sz=TextRenderer.MeasureText(note,MenuKit.Font,new Size(W-28,0),TextFormatFlags.WordBreak);Ok(sz.Height<=50,"подсказка влезает, текст: "+title);}}}
+ }
+ static void Stress(){foreach(var mode in new[]{Theme.Dark,Theme.Light}){Theme.Mode=mode;
+  var st=MenuKit.Info("Работает\tALT",ItemKind.Status);var he=MenuKit.Info("✓\t✓\t1/2\t✓",ItemKind.Health);var sp=MenuKit.Info("↓ 8,4 МБ/с\t32 мс\t2 ч",ItemKind.Stats);var m=new ContextMenuStrip();m.Items.AddRange(new ToolStripItem[]{st,he,sp});
+  Func<string,string,ToolStripMenuItem> I=(x,ic)=>MenuKit.Icon(MenuKit.Item(x,null),ic);
+  var g=I("Мои игры","games");var w=I("Wardogs","games");w.Tag=ItemKind.Toggle;g.DropDownItems.Add(w);g.DropDownItems.Add(I("ARC Raiders","games"));var sites=I("Мои сайты","sites");var hin=I("Подсказки","hints");var f=I("A","fast");var tg=I("T","power");var ex=I("E","exit");m.Items.AddRange(new ToolStripItem[]{g,sites,hin,f,tg,ex});
+  var sl=new List<Tuple<string,string,bool>>{Tuple.Create("a.com","l",false)};var hv=new HintsView();
+  var p=new ControlPanel(st,he,sp,()=>Theme.On,()=>"отклик 1 мс\tотклик 2 мс\tотклик 3 мс\nпинг 4 мс\tотклик 5 мс",new[]{g,sites,hin},new[]{f,f},tg,ex,()=>{},new Dictionary<ToolStripMenuItem,IPanelView>{{sites,new SitesView(()=>sl,(x,y)=>{},(x,y)=>{},x=>{})},{hin,hv}});
+  p.StartPosition=FormStartPosition.Manual;p.Location=new Point(-3000,-3000);p.Show();Application.DoEvents();
+  var proc=Process.GetCurrentProcess();var me=proc.Handle;var frame=new Bitmap(p.Width,p.Height);var pages=new ToolStripMenuItem[]{null,g,sites,hin};
+  Action<int> paint=n=>{for(int i=0;i<n;i++){p.OpenSection(pages[i%pages.Length]);p.DrawToBitmap(frame,new Rectangle(0,0,p.Width,p.Height));}};
+  paint(40);GC.Collect();GC.WaitForPendingFinalizers();int gdi0=GetGuiResources(me,0),usr0=GetGuiResources(me,1);long mem0=GC.GetTotalMemory(true);
+  var sw=Stopwatch.StartNew();paint(800);sw.Stop();GC.Collect();GC.WaitForPendingFinalizers();int gdi1=GetGuiResources(me,0),usr1=GetGuiResources(me,1);long mem1=GC.GetTotalMemory(true);
+  double ms=sw.ElapsedMilliseconds/800.0;Ok(gdi0>0,mode+" счётчик GDI работает");Ok(ms>1,mode+" кадры правда рисуются");GC.KeepAlive(proc);Ok(ms<50,mode+" скорость: один кадр "+ms.ToString("0.0")+" мс (норма до 50)");Ok(gdi1-gdi0<20,mode+" утечка графики: GDI "+gdi0+" -> "+gdi1);Ok(usr1-usr0<20,mode+" утечка окон: USER "+usr0+" -> "+usr1);Ok(mem1-mem0<5*1024*1024,mode+" утечка памяти: "+(mem0/1024)+" -> "+(mem1/1024)+" КБ");
+  p.Close();Application.DoEvents();Ok(p.IsDisposed,mode+" окно закрывается");}}
+}}

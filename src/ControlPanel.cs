@@ -26,6 +26,79 @@ namespace ZapretTray
         public const int CardWidth = 380;
         const int SideWidth = 190, Pad = 20, Gap = 12, CardHeight = 62, GroupGap = 14;
         const int PanelWidth = SideWidth + Pad * 2 + CardWidth * 2 + Gap, HeaderHeight = 62, PanelHeight = HeaderHeight + HintsView.Available + Pad;
+        // Вся раскладка в точках при масштабе 100% (LW на LH). На экране окно больше в UiScale раз: OnPaint увеличивает рисунок, мышь пересчитывается обратно
+        const int LW = PanelWidth, LH = PanelHeight;
+        public static float UserScale = 1f;   // "Размер окна" в настройках
+        public static readonly int[] ScaleStops = { 75, 90, 100, 115, 125, 150, 175, 200 };
+        // Карточка "Размер окна" в настройках рисуется ползунком. Значение применяется, когда отпустил мышь
+        public ToolStripMenuItem ScaleItem;
+        public Action<int> ScaleChanged;
+        bool scaleCapped;      // окно упёрлось в край экрана: крупнее уже не станет
+        int scaleDrag = -1;    // тянут ползунок: какое деление сейчас под мышью
+        public float UiScale = 1f;            // итог: масштаб Windows и размер окна, не больше экрана
+        public float FontScale = 1f;          // какую часть масштаба шрифтам добавляем сами (остальное даёт DPI)
+
+        [DllImport("user32.dll")]
+        static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+
+        class DpiScope : IDisposable
+        {
+            readonly IntPtr old;
+            public DpiScope() { try { old = SetThreadDpiAwarenessContext((IntPtr)(-2)); } catch { } }   // DPI_AWARENESS_CONTEXT_SYSTEM_AWARE
+            public void Dispose() { try { if (old != IntPtr.Zero) SetThreadDpiAwarenessContext(old); } catch { } }
+        }
+
+        // Только это окно знает настоящий масштаб экрана и рисует чётко. Остальные окна программы Windows по-прежнему растягивает сама.
+        // Окно и его поля ввода должны создаваться внутри: потому показ и смена страниц идут через Aware()
+        public static IDisposable Aware() { return new DpiScope(); }
+
+        public void ApplyScale()
+        {
+            float dpi;
+            using (var g = CreateGraphics()) dpi = g.DpiX;
+            var screen = Screen.FromPoint(Visible ? Location : Cursor.Position).WorkingArea;
+            float s = dpi / 96f * UserScale;
+            float fit = Math.Min(screen.Width * 0.96f / LW, screen.Height * 0.96f / LH);
+            scaleCapped = s > fit + 0.001f;
+            s = Math.Min(s, fit);
+            UiScale = Math.Max(0.5f, s);
+            FontScale = UiScale * 96f / dpi;
+            // Size, а не ClientSize: у окна без рамки они равны, но ClientSize после создания окна прибавляет место под заголовок, которого нет
+            Size = new Size((int)Math.Round(LW * UiScale), (int)Math.Round(LH * UiScale));
+            SyncViews();
+            Invalidate();
+        }
+
+        // Сменили "Размер окна", пока окно открыто
+        public void Rescale()
+        {
+            using (Aware())
+            {
+                ApplyScale();
+                var screen = Screen.FromControl(this).WorkingArea;
+                Left = Math.Max(screen.Left, Math.Min(Left, screen.Right - Width));
+                Top = Math.Max(screen.Top, Math.Min(Top, screen.Bottom - Height));
+            }
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            ApplyScale();
+        }
+
+        Point L(Point p) { return new Point((int)(p.X / UiScale), (int)(p.Y / UiScale)); }
+
+        Rectangle Dev(Rectangle r)
+        {
+            return Rectangle.FromLTRB((int)Math.Floor(r.Left * UiScale) - 1, (int)Math.Floor(r.Top * UiScale) - 1, (int)Math.Ceiling(r.Right * UiScale) + 1, (int)Math.Ceiling(r.Bottom * UiScale) + 1);
+        }
+
+        // Логический прямоугольник в точки окна: для полей ввода, которые лежат поверх рисунка
+        public Rectangle ToDevice(Rectangle r)
+        {
+            return new Rectangle((int)Math.Round(r.Left * UiScale), (int)Math.Round(r.Top * UiScale), (int)Math.Round(r.Width * UiScale), (int)Math.Round(r.Height * UiScale));
+        }
 
         readonly InfoItem status, health, stats;
         readonly Func<Color> statusColor;
@@ -94,6 +167,12 @@ namespace ZapretTray
         static extern bool ReleaseCapture();
 
         [DllImport("user32.dll")]
+        static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        static extern bool ShowWindow(IntPtr hWnd, int cmd);
+
+        [DllImport("user32.dll")]
         static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
         // Свернули любым способом, хоть кликом по панели задач: окно прячется к значку у часов
@@ -119,18 +198,22 @@ namespace ZapretTray
         // Повторная правая кнопка на значке: показать уже открытое окно
         public void Restore()
         {
-            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
-            if (!Visible)
+            // После сворачивания Windows оставляет окну крошечный размер: возвращаем свой, когда окно уже снова обычное
+            bool wasHidden = !Visible;
+            using (Aware())
             {
-                Show();
-                Theme.RoundCorners(this);
+                if (!Visible) Show();
+                // WindowState у спрятанного окна врёт: спрашиваем Windows, свёрнуто ли оно на самом деле
+                if (IsIconic(Handle)) ShowWindow(Handle, 9);   // SW_RESTORE
+                ApplyScale();
             }
+            if (wasHidden) Theme.RoundCorners(this);
             SetForegroundWindow(Handle);
             Activate();
         }
 
-        Rectangle CloseButton { get { return new Rectangle(ClientSize.Width - 42, 6, 36, 28); } }
-        Rectangle MinimizeButton { get { return new Rectangle(ClientSize.Width - 80, 6, 36, 28); } }
+        Rectangle CloseButton { get { return new Rectangle(LW - 42, 6, 36, 28); } }
+        Rectangle MinimizeButton { get { return new Rectangle(LW - 80, 6, 36, 28); } }
 
         void DrawWindowButtons(Graphics g)
         {
@@ -155,12 +238,18 @@ namespace ZapretTray
         // По центру экрана, где курсор, или там, куда окно перетащили
         public void ShowCentered()
         {
-            var at = lastPosition ?? Point.Empty;
-            var screen = Screen.FromPoint(lastPosition.HasValue ? at : Cursor.Position).WorkingArea;
-            if (!lastPosition.HasValue) at = new Point(screen.Left + (screen.Width - Width) / 2, screen.Top + (screen.Height - Height) / 2);
-            Left = Math.Max(screen.Left, Math.Min(at.X, screen.Right - Width));
-            Top = Math.Max(screen.Top, Math.Min(at.Y, screen.Bottom - Height));
-            Show();
+            // Координаты экрана тоже внутри: снаружи Windows отдаёт их в растянутом виде
+            using (Aware())
+            {
+                CreateControl();
+                var at = lastPosition ?? Point.Empty;
+                var screen = Screen.FromPoint(lastPosition.HasValue ? at : Cursor.Position).WorkingArea;
+                ApplyScale();
+                if (!lastPosition.HasValue) at = new Point(screen.Left + (screen.Width - Width) / 2, screen.Top + (screen.Height - Height) / 2);
+                Left = Math.Max(screen.Left, Math.Min(at.X, screen.Right - Width));
+                Top = Math.Max(screen.Top, Math.Min(at.Y, screen.Bottom - Height));
+                Show();
+            }
             Theme.RoundCorners(this);
             SetForegroundWindow(Handle);
             Activate();
@@ -170,7 +259,16 @@ namespace ZapretTray
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
-            if (e.Button != MouseButtons.Left || HitTest(e.Location) != null) return;
+            if (e.Button != MouseButtons.Left) return;
+            var hit = HitTest(L(e.Location));
+            if (hit != null && hit == ScaleItem && ScaleChanged != null)
+            {
+                scaleDrag = NearestStop(L(e.Location).X);
+                Capture = true;
+                Invalidate();
+                return;
+            }
+            if (hit != null) return;
             ReleaseCapture();
             SendMessage(Handle, 0xA1, (IntPtr)2, IntPtr.Zero);   // WM_NCLBUTTONDOWN, HTCAPTION
         }
@@ -202,7 +300,7 @@ namespace ZapretTray
         void SyncViews()
         {
             var current = CurrentView;
-            foreach (var v in views.Values) v.Activate(this, v == current);
+            using (Aware()) foreach (var v in views.Values) v.Activate(this, v == current);
         }
 
         Rectangle SectionTab(int i)
@@ -211,9 +309,9 @@ namespace ZapretTray
         }
 
         // Внизу колонки, под линией: включение, день и ночь, выход
-        Rectangle ToggleTab { get { return new Rectangle(10, ClientSize.Height - 148, SideWidth - 20, 42); } }
-        Rectangle ThemeTab { get { return new Rectangle(10, ClientSize.Height - 100, SideWidth - 20, 42); } }
-        Rectangle ExitTab { get { return new Rectangle(10, ClientSize.Height - 52, SideWidth - 20, 42); } }
+        Rectangle ToggleTab { get { return new Rectangle(10, LH - 148, SideWidth - 20, 42); } }
+        Rectangle ThemeTab { get { return new Rectangle(10, LH - 100, SideWidth - 20, 42); } }
+        Rectangle ExitTab { get { return new Rectangle(10, LH - 52, SideWidth - 20, 42); } }
 
         public Action ToggleTheme;
 
@@ -225,7 +323,7 @@ namespace ZapretTray
             {
                 var view = CurrentView;
                 int top = HeaderHeight + (view != null ? view.Extra : 0);
-                return new Rectangle(SideWidth, top, ClientSize.Width - SideWidth, ClientSize.Height - top);
+                return new Rectangle(SideWidth, top, LW - SideWidth, LH - top);
             }
         }
 
@@ -261,12 +359,30 @@ namespace ZapretTray
             return null;
         }
 
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (scaleDrag < 0) return;
+            int value = ScaleStops[scaleDrag];
+            scaleDrag = -1;
+            Capture = false;
+            Invalidate();
+            if (value != CurrentStopValue()) ScaleChanged(value);
+        }
+
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
-            mouse = e.Location;
-            var hit = HitTest(e.Location);
-            if (Equals(hit, hover) && CurrentView == null) return;
+            mouse = L(e.Location);
+            if (scaleDrag >= 0)
+            {
+                int stop = NearestStop(mouse.X);
+                if (stop != scaleDrag) { scaleDrag = stop; Invalidate(); }
+                return;
+            }
+            var hit = HitTest(L(e.Location));
+            // Над плиткой с графиком перерисовываем и без смены наведения: подпись едет за мышью
+            if (Equals(hit, hover) && CurrentView == null && !(hit is string && ((string)hit).StartsWith("tile"))) return;
             hover = hit;
             var item = hit as ToolStripMenuItem;
             Cursor = hit != null && (item == null || item.Enabled) ? Cursors.Hand : Cursors.Default;
@@ -294,7 +410,7 @@ namespace ZapretTray
         {
             base.OnMouseClick(e);
             if (e.Button != MouseButtons.Left) return;
-            var hit = HitTest(e.Location);
+            var hit = HitTest(L(e.Location));
             if (hit == null) return;
             if (hit is Rectangle) OpenSection(null);
             else if (hit as string == "close") { Close(); return; }
@@ -304,7 +420,8 @@ namespace ZapretTray
             else if (hit as string == "back") Back();
             else if (hit as string == "status") { for (int i = 0; i < 4; i++) if (TileHasResult(i)) StartTileCheck(i); }
             else if (hit is string && ((string)hit).StartsWith("tile")) TileClick(((string)hit)[4] - '0');
-            else if (hit as string == "view") { if (CurrentView.Click(e.Location)) scroll = 0; }
+            else if (hit as string == "view") { if (CurrentView.Click(L(e.Location))) scroll = 0; }
+            else if (hit == ScaleItem && ScaleChanged != null) { }
             else Press((ToolStripMenuItem)hit);
             Invalidate();
         }
@@ -363,15 +480,15 @@ namespace ZapretTray
         // Фон окна: тёмный, с едва заметным свечением в углу. Рисуем один раз, шапка берёт отсюда же свой кусок
         Bitmap Backdrop()
         {
-            if (backdrop != null && backdropTheme == P && backdrop.Size == ClientSize) return backdrop;
+            if (backdrop != null && backdropTheme == P && backdrop.Width == LW && backdrop.Height == LH) return backdrop;
             if (backdrop != null) backdrop.Dispose();
-            backdrop = new Bitmap(ClientSize.Width, ClientSize.Height);
+            backdrop = new Bitmap(LW, LH);
             backdropTheme = P;
             using (var g = Graphics.FromImage(backdrop))
             {
                 g.Clear(P.Back);
-                Glow(g, new Rectangle(ClientSize.Width - 360, -300, 720, 600), P.Check, 42);
-                Glow(g, new Rectangle(SideWidth - 240, ClientSize.Height - 220, 560, 440), P.Accent2, 24);
+                Glow(g, new Rectangle(LW - 360, -300, 720, 600), P.Check, 42);
+                Glow(g, new Rectangle(SideWidth - 240, LH - 220, 560, 440), P.Accent2, 24);
             }
             return backdrop;
         }
@@ -507,19 +624,20 @@ namespace ZapretTray
             if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.DrawImageUnscaled(Backdrop(), 0, 0);   // тема могла смениться, пока окно открыто
+            g.ScaleTransform(UiScale, UiScale);   // дальше всё рисуется в точках масштаба 100%
+            g.DrawImage(Backdrop(), 0, 0, LW, LH);   // тема могла смениться, пока окно открыто
             DrawSidebar(g);
             if (path.Count == 0) DrawHome(g);
             else if (CurrentView != null) DrawView(g);
             else DrawSection(g);
             DrawWindowButtons(g);
-            using (var p = new Pen(P.Border)) g.DrawRectangle(p, 0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
+            using (var p = new Pen(P.Border)) g.DrawRectangle(p, 0, 0, LW - 1, LH - 1);
         }
 
         void DrawSidebar(Graphics g)
         {
-            using (var b = new SolidBrush(Mix(P.Back, P.Card, 0.6f))) g.FillRectangle(b, 0, 0, SideWidth, ClientSize.Height);
-            using (var p = new Pen(P.Separator)) g.DrawLine(p, SideWidth - 1, 0, SideWidth - 1, ClientSize.Height);
+            using (var b = new SolidBrush(Mix(P.Back, P.Card, 0.6f))) g.FillRectangle(b, 0, 0, SideWidth, LH);
+            using (var p = new Pen(P.Separator)) g.DrawLine(p, SideWidth - 1, 0, SideWidth - 1, LH);
             // Логотип
             Glow(g, new Rectangle(4, 4, 56, 56), Theme.On, 80);
             Box(g, new Rectangle(16, 16, 32, 32), Theme.On, 16);
@@ -536,13 +654,13 @@ namespace ZapretTray
             int lineY = ToggleTab.Top - 8;
             using (var p = new Pen(P.Separator)) g.DrawLine(p, 16, lineY, SideWidth - 16, lineY);
             bool on = (toggle.Tag as string) != ItemKind.PowerOn;
-            // Выключение - настоящий переключатель: сразу видно, включено или нет
+            // Включение - кнопка, как "День/Ночь": значок и слово показывают, что сейчас, нажатие меняет
             if (hover == toggle) Box(g, ToggleTab, P.Hover, 9);
             g.SmoothingMode = SmoothingMode.AntiAlias;
             int powerY = ToggleTab.Top + ToggleTab.Height / 2;
-            ThemedRenderer.DrawIcon(g, "power", ToggleTab.Left + 12, powerY, on ? Theme.On : P.SubText);
-            TextRenderer.DrawText(g, on ? "Включён" : "Выключен", MenuKit.Bold, new Rectangle(ToggleTab.Left + 38, ToggleTab.Top, ToggleTab.Width - 88, ToggleTab.Height), on ? P.Text : P.SubText, Line);
-            DrawSwitch(g, new Rectangle(ToggleTab.Right - 46, powerY - 10, 36, 20), on);
+            if (on) Glow(g, new Rectangle(ToggleTab.Left + 2, powerY - 18, 36, 36), Theme.On, 90);
+            ThemedRenderer.DrawIcon(g, "power", ToggleTab.Left + 12, powerY, on ? Theme.On : P.Disabled);
+            TextRenderer.DrawText(g, on ? "Включён" : "Выключен", MenuKit.Bold, new Rectangle(ToggleTab.Left + 38, ToggleTab.Top, ToggleTab.Width - 42, ToggleTab.Height), on ? P.Text : P.SubText, Line);
             if (ToggleTheme != null) DrawThemeTab(g);
             DrawTab(g, ExitTab, exit.Text, "exit", false, hover == exit);
 
@@ -608,7 +726,7 @@ namespace ZapretTray
             const int actionHeight = 84, top = HeaderHeight;
             PageTitle(g, "Главная", titleFont, SideWidth + Pad, 12, 34, CardWidth);
             int x = SideWidth + Pad, w = CardWidth * 2 + Gap;
-            int actionsTop = ClientSize.Height - Pad - actionHeight;
+            int actionsTop = LH - Pad - actionHeight;
             int h = actionsTop - Gap - top;
 
             if (health.Available)
@@ -698,9 +816,9 @@ namespace ZapretTray
                 if (popStart[i] >= 0 && Elapsed(popStart[i]) >= PopMs) popStart[i] = -1;
                 if (spinStart[i] < 0 && popStart[i] < 0) continue;
                 active = true;
-                if (path.Count == 0) Invalidate(tileRects[i]);
+                if (path.Count == 0) Invalidate(Dev(tileRects[i]));
             }
-            if (path.Count == 0) Invalidate(statusRect);
+            if (path.Count == 0) Invalidate(Dev(statusRect));
             if (active) return;
             tileTimer.Stop();
             Invalidate();
@@ -764,7 +882,7 @@ namespace ZapretTray
             // Размер считаем от текста, поэтому он всегда внутри рамки
             var size = TextRenderer.MeasureText(g, text, MenuKit.Font, new Size(textWidth, 0), flags);
             int width = size.Width + padX * 2, height = size.Height + padY * 2;
-            var box = new Rectangle(Math.Max(SideWidth + 8, Math.Min(gameHelp.Right - width, ClientSize.Width - width - 10)), gameHelp.Bottom + 6, width, height);
+            var box = new Rectangle(Math.Max(SideWidth + 8, Math.Min(gameHelp.Right - width, LW - width - 10)), gameHelp.Bottom + 6, width, height);
             Card(g, box, P.Hover, 10);
             TextRenderer.DrawText(g, text, MenuKit.Font, new Rectangle(box.Left + padX, box.Top + padY, size.Width, size.Height), P.Text, flags);
         }
@@ -835,13 +953,18 @@ namespace ZapretTray
                     g.Restore(mark);
                 }
 
+                // Пинг за час - над табличкой, вместо разделительной линии
+                int graphTop = cy + 88, graphBottom = y + h - TimesHeight;
+                bool graph = DrawGraph(g, tileRects[i], new Rectangle(left + 16, graphTop, tile - 32, graphBottom - graphTop), ServiceColors[i], i, 60);
+
                 // Под результатом: у игр пинг до сервера, он важнее и крупнее, у остальных отклик сайта
                 var time = i < times.Length ? times[i] : "";
                 // Табличка внизу плитки: у всех на одном уровне
                 if (time.Length > 0)
                 {
                     int tableTop = y + h - TimesHeight;
-                    using (var pen = new Pen(hot ? Mix(P.Separator, P.SubText, 0.3f) : P.Separator)) g.DrawLine(pen, left + 16, tableTop, left + tile - 16, tableTop);   // цвет наведения совпадает с линией
+                    if (!graph)
+                        using (var pen = new Pen(hot ? Mix(P.Separator, P.SubText, 0.3f) : P.Separator)) g.DrawLine(pen, left + 16, tableTop, left + tile - 16, tableTop);   // цвет наведения совпадает с линией
                     var lines = time.Split((char)10);
                     int rowTop = tableTop + (TimesHeight - lines.Length * 26) / 2;
                     for (int line = 0; line < lines.Length; line++)
@@ -898,6 +1021,12 @@ namespace ZapretTray
                 bool hot = Equals(hover, "tile" + number);
                 Card(g, tileRects[number], hot ? P.Hover : P.Card, 10, hot ? P.Check : (Color?)null);
                 Glow(g, new Rectangle(left + tile / 2 - 54, y + h / 2 - 88, 108, 96), NumberColors[i], 60);
+                if (i < 2)
+                {
+                    var card = tileRects[number];
+                    DrawGraph(g, card, new Rectangle(card.Left + 16, card.Top + h / 2 + 56, card.Width - 32, h - h / 2 - 66), NumberColors[i],
+                        i == 0 ? 4 : 5, i == 0 ? 100 * 1024 : 60);
+                }
                 var state = g.Save();
                 g.TranslateTransform(left + tile / 2 - 27, y + h / 2 - 40);
                 g.ScaleTransform(3f, 3f);
@@ -935,6 +1064,104 @@ namespace ZapretTray
             return (m.Groups[1].Success ? int.Parse(m.Groups[1].Value) * 60 : 0) + int.Parse(m.Groups[2].Value);
         }
 
+        // История для графиков: 0-3 - сервисы (пинг), 4 - скорость (байт в секунду), 5 - пинг. Замер раз в 10 секунд, час. -1 - не ответил
+        public Func<int, long[]> TileHistory;
+        public Func<int, DateTime[]> TileTimes;   // когда сделан каждый замер (UTC)
+
+        // Волна за последний час. Замеры усредняем кусками (за час - по 10 штук, 100 секунд), иначе 360 точек на 180 пикселях - сплошной шум.
+        // Мало замеров (только запустили) - без усреднения, чтобы график появился почти сразу. Кусок, где ничего не ответило, - разрыв.
+        // floor - низ шкалы сверху: ровный пинг 10 мс не должен выглядеть горами. Мышь над плиткой - точка и подпись с числом.
+        // false - рисовать нечего (мало замеров)
+        bool DrawGraph(Graphics g, Rectangle card, Rectangle area, Color color, int tile, double floor)
+        {
+            var history = TileHistory == null ? null : TileHistory(tile);
+            var times = TileTimes == null ? null : TileTimes(tile);
+            if (history == null || area.Height < 12) return false;
+            int chunk = Math.Max(1, history.Length / 36);
+            var points = new List<double>();
+            var pointTimes = new List<DateTime>();
+            for (int k = 0; k < history.Length; k += chunk)
+            {
+                double sum = 0;
+                int count = 0, end = Math.Min(k + chunk, history.Length);
+                for (int m = k; m < end; m++)
+                    if (history[m] >= 0) { sum += history[m]; count++; }
+                points.Add(count > 0 ? sum / count : -1);
+                pointTimes.Add(times != null && times.Length == history.Length ? times[end - 1] : DateTime.UtcNow);
+            }
+            if (System.Linq.Enumerable.Count(points, v => v >= 0) < 2) return false;
+            double top = Math.Max(floor, System.Linq.Enumerable.Max(points) * 1.15);
+            float step = (float)area.Width / Math.Max(1, points.Count - 1);
+            Func<int, PointF> at = k => new PointF(area.Left + k * step, area.Bottom - (float)(Math.Min(points[k], top) / top * area.Height));
+            var state = g.Save();
+            using (var clip = ThemedRenderer.RoundRect(new Rectangle(card.Left + 1, card.Top + 1, card.Width - 2, card.Height - 2), 9)) g.SetClip(clip, CombineMode.Intersect);
+            var segment = new List<PointF>();
+            for (int k = 0; k <= points.Count; k++)
+            {
+                if (k < points.Count && points[k] >= 0)
+                {
+                    segment.Add(at(k));
+                    continue;
+                }
+                if (segment.Count >= 2)
+                    using (var path = new GraphicsPath())
+                    {
+                        path.AddCurve(segment.ToArray(), 0.4f);
+                        path.AddLine(segment[segment.Count - 1].X, area.Bottom + 2, segment[0].X, area.Bottom + 2);
+                        path.CloseFigure();
+                        using (var b = new LinearGradientBrush(new Rectangle(area.Left, area.Top - 2, area.Width, area.Height + 4), Color.FromArgb(80, color), Color.FromArgb(0, color), 90f))
+                            g.FillPath(b, path);
+                        using (var pen = new Pen(Color.FromArgb(200, color), 1.8f) { LineJoin = LineJoin.Round })
+                            g.DrawCurve(pen, segment.ToArray(), 0.4f);
+                    }
+                segment.Clear();
+            }
+
+            // Мышь над плиткой и по ширине графика: ближайшая точка, линия вниз и подпись "45 мс · 12 мин назад"
+            int hot = -1;
+            if (Equals(hover, "tile" + tile) && mouse.X >= area.Left - step / 2 && mouse.X <= area.Right + step / 2 && mouse.Y >= area.Top - 30 && mouse.Y <= card.Bottom)
+                hot = Math.Max(0, Math.Min(points.Count - 1, (int)Math.Round((mouse.X - area.Left) / step)));
+            int dot = hot >= 0 ? hot : points.Count - 1;
+            if (points[dot] >= 0)
+            {
+                var p = at(dot);
+                if (hot >= 0)
+                    using (var pen = new Pen(Color.FromArgb(120, color), 1f) { DashStyle = DashStyle.Dot }) g.DrawLine(pen, p.X, area.Top - 4, p.X, area.Bottom);
+                using (var b = new SolidBrush(Color.FromArgb(70, color))) g.FillEllipse(b, p.X - 6, p.Y - 6, 12, 12);
+                using (var b = new SolidBrush(color)) g.FillEllipse(b, p.X - 3, p.Y - 3, 6, 6);
+            }
+            g.Restore(state);
+            if (hot >= 0) DrawGraphLabel(g, card, area, at(hot).X, GraphValue(tile, points[hot]) + " · " + Ago(pointTimes[hot]));
+            return true;
+        }
+
+        static string GraphValue(int tile, double value)
+        {
+            if (value < 0) return "нет ответа";
+            if (tile != 4) return (int)Math.Round(value) + " мс";
+            return value >= 1024 * 1024 ? (value / 1024 / 1024).ToString("0.0") + " МБ/с" : (value / 1024).ToString("0") + " КБ/с";
+        }
+
+        static string Ago(DateTime when)
+        {
+            int minutes = (int)(DateTime.UtcNow - when).TotalMinutes;
+            return minutes < 1 ? "сейчас" : minutes + " мин назад";
+        }
+
+        // Подпись над графиком: тёмная плашка, не вылезает за плитку
+        void DrawGraphLabel(Graphics g, Rectangle card, Rectangle area, float x, string text)
+        {
+            var size = TextRenderer.MeasureText(text, MenuKit.Small);
+            int w = size.Width + 14, h = 22;
+            int left = Math.Max(card.Left + 6, Math.Min(card.Right - 6 - w, (int)x - w / 2));
+            var r = new Rectangle(left, area.Top - h - 4, w, h);
+            Box(g, r, Mix(P.Back, P.Text, 0.08f), 6);
+            using (var path = ThemedRenderer.RoundRect(r, 6))
+            using (var pen = new Pen(P.Separator)) g.DrawPath(pen, path);
+            TextRenderer.DrawText(g, text, MenuKit.Small, r, P.Text,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+        }
+
         static int PingBars(string text)
         {
             double ms = NumberIn(text);
@@ -970,7 +1197,7 @@ namespace ZapretTray
         // Поэтому шапку рисуем после содержимого, поверх него
         void CoverHeader(Graphics g, Rectangle area)
         {
-            var top = new Rectangle(SideWidth, 0, ClientSize.Width - SideWidth, area.Top);
+            var top = new Rectangle(SideWidth, 0, LW - SideWidth, area.Top);
             g.DrawImage(Backdrop(), top, top, GraphicsUnit.Pixel);
         }
 
@@ -979,7 +1206,7 @@ namespace ZapretTray
             if (MaxScroll <= 0) return;
             int barHeight = Math.Max(30, area.Height * area.Height / contentHeight);
             int barTop = area.Top + (area.Height - barHeight) * scroll / MaxScroll;
-            Box(g, new Rectangle(ClientSize.Width - 8, barTop, 4, barHeight), P.Hover, 2);
+            Box(g, new Rectangle(LW - 8, barTop, 4, barHeight), P.Hover, 2);
         }
 
         void DrawSection(Graphics g)
@@ -1055,7 +1282,12 @@ namespace ZapretTray
             g.SmoothingMode = SmoothingMode.AntiAlias;
 
             int right = r.Right - 12;
-            if (IsSwitch(item))
+            if (item == ScaleItem && ScaleChanged != null)
+            {
+                DrawScaleSlider(g, r);
+                right = SliderTrack(r).Left - 16;
+            }
+            else if (IsSwitch(item))
             {
                 DrawSwitch(g, new Rectangle(right - 34, r.Top + (r.Height - 20) / 2, 34, 20), item.Checked);
                 right -= 42;
@@ -1092,6 +1324,7 @@ namespace ZapretTray
                 note = null;
             }
             if (note == null && !string.IsNullOrEmpty(item.ToolTipText)) note = item.ToolTipText;
+            if (item == ScaleItem && ScaleChanged != null) note = ScaleNote();
             var color = !enabled ? P.Disabled : P.Text;
             int textLeft = badge.Right + 12, textWidth = right - textLeft;
             if (note == null)
@@ -1101,6 +1334,61 @@ namespace ZapretTray
                 TextRenderer.DrawText(g, text, cardFont, new Rectangle(textLeft, r.Top + 10, textWidth, 22), color, Line);
                 TextRenderer.DrawText(g, note, MenuKit.Small, new Rectangle(textLeft, r.Top + 31, textWidth, 20), P.SubText, Line);
             }
+        }
+
+        // Ползунок "Размер окна": дорожка с делениями, под ними проценты
+        static Rectangle SliderTrack(Rectangle card)
+        {
+            return new Rectangle(card.Right - 186, card.Top + card.Height / 2 - 2, 168, 4);
+        }
+
+        int CurrentStopValue()
+        {
+            int percent = (int)Math.Round(UserScale * 100), best = 0;
+            for (int i = 1; i < ScaleStops.Length; i++)
+                if (Math.Abs(ScaleStops[i] - percent) < Math.Abs(ScaleStops[best] - percent)) best = i;
+            return ScaleStops[best];
+        }
+
+        float StopX(Rectangle track, int i)
+        {
+            return track.Left + track.Width * i / (float)(ScaleStops.Length - 1);
+        }
+
+        int NearestStop(int x)
+        {
+            var card = cards.Find(c => c.Value == ScaleItem).Key;
+            var track = SliderTrack(card);
+            int best = 0;
+            for (int i = 1; i < ScaleStops.Length; i++)
+                if (Math.Abs(StopX(track, i) - x) < Math.Abs(StopX(track, best) - x)) best = i;
+            return best;
+        }
+
+        void DrawScaleSlider(Graphics g, Rectangle card)
+        {
+            var track = SliderTrack(card);
+            int chosen = scaleDrag >= 0 ? scaleDrag : Array.IndexOf(ScaleStops, CurrentStopValue());
+            float knob = StopX(track, chosen);
+            Box(g, track, Mix(P.Tile, P.SubText, 0.3f), 2);
+            if (knob > track.Left)
+                Accent(g, new Rectangle(track.Left, track.Top, (int)(knob - track.Left) + 1, track.Height), 2);
+            for (int i = 0; i < ScaleStops.Length; i++)
+            {
+                float x = StopX(track, i);
+                using (var b = new SolidBrush(i <= chosen ? Color.White : Mix(P.Tile, P.SubText, 0.6f)))
+                    g.FillEllipse(b, x - 2, track.Top, 4, 4);
+            }
+            using (var b = new SolidBrush(Color.FromArgb(70, P.Check))) g.FillEllipse(b, knob - 11, track.Top + 2 - 11, 22, 22);
+            using (var b = new SolidBrush(Color.White)) g.FillEllipse(b, knob - 7, track.Top + 2 - 7, 14, 14);
+            using (var p = new Pen(P.Check, 2f)) g.DrawEllipse(p, knob - 7, track.Top + 2 - 7, 14, 14);
+        }
+
+        // Подпись под названием: что выбрано, и честно - если экран больше не вмещает
+        public string ScaleNote()
+        {
+            int value = scaleDrag >= 0 ? ScaleStops[scaleDrag] : CurrentStopValue();
+            return value + "%" + (scaleCapped && scaleDrag < 0 ? ", больше не влезет" : "");
         }
 
         static bool IsSwitch(ToolStripMenuItem item)

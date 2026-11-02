@@ -67,7 +67,7 @@ namespace ZapretTray
                 {
                     ApplyBrowsers(paths);
                     Logger.Write("DNS: включён через настройки браузеров, сборка Windows " + WindowsBuild());
-                    message = "Защищённый DNS включён в Chrome, Edge и Firefox. Полностью перезапусти браузер.\nВернуть можно в «Настройки» → «Вернуть DNS как было».";
+                    message = "Защищённый DNS включён в Chrome, Edge и Firefox. Полностью перезапусти браузер.\nВернуть можно в «Подключение» → «Вернуть DNS как было».";
                     return true;
                 }
 
@@ -82,7 +82,7 @@ namespace ZapretTray
                     return false;
                 }
                 Logger.Write("DNS: включён защищённый DNS Windows");
-                message = "Защищённый DNS включён.\nВернуть можно в «Настройки» → «Вернуть DNS как было».";
+                message = "Защищённый DNS включён.\nВернуть можно в «Подключение» → «Вернуть DNS как было».";
                 return true;
             }
             catch (Exception ex)

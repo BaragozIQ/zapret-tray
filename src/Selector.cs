@@ -34,7 +34,8 @@ namespace ZapretTray
         // best=false: прошлый удачный конфиг, иначе первый, где всё работает.
         // best=true: все конфиги по 3 раза, берём тот, где всё работает с минимальным пингом.
         // cancelled() - выключили посреди подбора. progress - текст для подсказки у значка
-        public static bool Run(AppPaths paths, bool best, Func<bool> cancelled, Action<string> progress, out string error)
+        // underVpn - запуск при включённом VPN: замеры показывают сеть VPN, а не zapret. Конфиг не меняем, ставим запомненный
+        public static bool Run(AppPaths paths, bool best, bool underVpn, Func<bool> cancelled, Action<string> progress, out string error)
         {
             error = null;
             if (!SiteCheck.Available) { error = "не найден curl.exe (нужна Windows 10 1803 или новее)"; return false; }
@@ -46,6 +47,15 @@ namespace ZapretTray
 
             // До 3 запомненных конфигов, первый - лучший
             var saved = Util.ReadEntries(paths.BestConfig);
+
+            var kept = underVpn && !best ? saved.Select(n => bats.FirstOrDefault(b => string.Equals(Path.GetFileName(b), n, StringComparison.OrdinalIgnoreCase))).FirstOrDefault(b => b != null) : null;
+            if (kept != null)
+            {
+                StopZapret();
+                StartConfig(paths, kept);
+                Logger.Write("подбор: VPN, оставляю " + Path.GetFileName(kept) + " без проверки");
+                if (WaitWinwsReady()) return true;
+            }
 
             if (!best && saved.Count > 0)
             {

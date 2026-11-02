@@ -5,6 +5,9 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Net.NetworkInformation;
 using System.ServiceProcess;
 using System.Text;
@@ -32,6 +35,7 @@ namespace ZapretTray
         public bool TlsDone;      // шифрованное соединение установилось
         public long Bytes;        // сколько успело загрузиться
         public string HttpCode;
+        public string RemoteIp;   // куда на самом деле подключились: пинговать по нему, если DNS Windows имя не знает
 
         // Докуда дошло: от этого зависит лечение. Адрес недоступен - конфиг может не помочь, обрыв на шифровании или заморозка - его дело
         public string Stage
@@ -126,7 +130,7 @@ namespace ZapretTray
         // Полный GET (а не HEAD), чтобы ловить и "заморозку" на 16-20 КБ. true - сервер ответил любым HTTP-кодом
         static bool Probe(string url, string doh, int timeoutSec, SiteResult r)
         {
-            var args = "-s -o NUL -m " + timeoutSec + " --connect-timeout 3 -w \"%{http_code} %{time_connect} %{time_appconnect} %{size_download}\" ";
+            var args = "-s -o NUL -m " + timeoutSec + " --connect-timeout 3 -w \"%{http_code} %{time_connect} %{time_appconnect} %{size_download} %{remote_ip}\" ";
             if (doh != null) args += "--doh-url " + doh + " ";
             var psi = new ProcessStartInfo(Curl, args + "\"" + url + "\"")
             {
@@ -168,6 +172,8 @@ namespace ZapretTray
             r.TlsDone = app > 0;
             r.Bytes = bytes;
             r.TlsMs = Math.Max(0, (app - connect) * 1000);
+            System.Net.IPAddress ip;
+            r.RemoteIp = parts.Length > 4 && System.Net.IPAddress.TryParse(parts[4], out ip) ? parts[4] : null;
         }
 
         // Все сайты параллельно, результат в том же порядке
@@ -264,7 +270,7 @@ namespace ZapretTray
         }
 
         // Короткий вывод в начале отчёта: что не так и куда смотреть. Работает одинаково на любом компьютере
-        static List<string> Conclusions(bool winws, bool internet, string vpn, List<string> others, bool service, List<SiteResult> sites, bool dnsFixed, LocalState local, List<SiteResult> control)
+        static List<string> Conclusions(bool winws, bool internet, string vpn, List<string> others, bool service, List<SiteResult> sites, bool dnsFixed, LocalState local, List<SiteResult> control, bool dnsIntercepted, bool windows10)
         {
             var o = new List<string>();
             if (!internet) o.Add("Нет интернета: дело не в программе.");
@@ -283,7 +289,16 @@ namespace ZapretTray
             if (noAddress.Count > 0) o.Add("Не удаётся подключиться к адресу: " + string.Join(", ", noAddress) + ". Похоже на блокировку по IP или проблему сети, другой конфиг может не помочь.");
             var dns = sites.Where(r => r.DnsProblem).Select(r => r.Url).ToList();
             if (noConnect.Count > 0) o.Add("Соединение обрывается или виснет: " + string.Join(", ", noConnect) + ". Похоже на конфиг, нужен другой.");
-            if (dns.Count > 0) o.Add("DNS не находит адрес: " + string.Join(", ", dns) + (dnsFixed ? ". Исправление DNS уже включено." : ". Поможет «Исправить DNS»."));
+            if (dns.Count > 0)
+            {
+                var line = "DNS не находит адрес: " + string.Join(", ", dns) + ".";
+                // Чужие DNS тоже врут: значит, провайдер перехватывает запросы, сменить сервер мало, нужен защищённый
+                if (dnsIntercepted) line += " Обычные 1.1.1.1 и 8.8.8.8 тоже не находят: провайдер подменяет DNS-запросы, поможет только защищённый DNS.";
+                // На Windows 10 исправление работает только в браузерах: сама Windows и проверки программы по-прежнему видят старый DNS
+                if (dnsFixed) line += windows10 ? " Исправление DNS включено, на Windows 10 оно действует только в Chrome, Edge и Firefox: в браузере YouTube должен открываться." : " Исправление DNS уже включено.";
+                else line += windows10 ? " Поможет «Исправить DNS»: на Windows 10 он включится в Chrome, Edge и Firefox, браузер потом закрыть полностью и открыть заново." : " Поможет «Исправить DNS».";
+                o.Add(line);
+            }
             if (o.Count == 0) o.Add("Явных проблем не видно: все проверенные сайты открываются.");
             return o;
         }
@@ -313,17 +328,20 @@ namespace ZapretTray
             var sites = SiteCheck.RunAll(Selector.Targets, 8);
             var control = SiteCheck.RunAll(ControlSites, 8);
             var local = ReadLocalState(paths);
+            var dnsLines = DnsHosts.SelectMany(h => DnsServers.Select(s => Task.Factory.StartNew(() => DnsLine(h, s), TaskCreationOptions.LongRunning))).ToList();
+            var dnsText = dnsLines.Select(t => t.Result).ToList();
+            bool intercepted = dnsText.Count(l => l.StartsWith(DnsHosts[0] + " через ") && (l.Contains(" 1.1.1.1:") || l.Contains(" 8.8.8.8:")) && l.EndsWith("не нашёл")) == 2;
             var ini = new Settings(paths.Settings);
 
             o.AppendLine("=== ZAPRET TRAY: ОТЧЁТ ===");
             o.AppendLine(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
             o.AppendLine();
             o.AppendLine("=== ВЫВОД ===");
-            foreach (var line in Conclusions(winws, internet, vpn, others, service, sites, dnsFixed, local, control)) o.AppendLine("- " + line);
+            foreach (var line in Conclusions(winws, internet, vpn, others, service, sites, dnsFixed, local, control, intercepted, DnsFix.WindowsBuild() < 22000)) o.AppendLine("- " + line);
 
             o.AppendLine();
             o.AppendLine("=== ПРОГРАММА ===");
-            o.AppendLine("Программа " + AppInfo.Version + ", zapret " + ZapretUpdater.LocalVersion(paths));
+            o.AppendLine("Программа " + AppInfo.Version + ", zapret " + ZapretUpdater.LocalVersion(paths) + ", компьютер ПК " + BugReport.MachineId(ini));
             o.AppendLine("Windows: сборка " + DnsFix.WindowsBuild());
             o.AppendLine("Статус: " + status);
             o.AppendLine("winws: " + (winws ? "работает, запущено " + local.WinwsCount + ", с " + local.WinwsSince : "не работает"));
@@ -364,8 +382,7 @@ namespace ZapretTray
 
             o.AppendLine();
             o.AppendLine("=== ОБЫЧНЫЙ DNS ===");
-            var dnsLines = DnsHosts.SelectMany(h => DnsServers.Select(s => Task.Factory.StartNew(() => DnsLine(h, s), TaskCreationOptions.LongRunning))).ToList();
-            foreach (var t in dnsLines) o.AppendLine(t.Result);
+            foreach (var l in dnsText) o.AppendLine(l);
 
             o.AppendLine();
             o.AppendLine("=== СЕТЬ ===");
@@ -419,6 +436,124 @@ namespace ZapretTray
             }
             catch (Exception ex) { Logger.Write("отчёт: файл не записан: " + ex.Message); }
             return text;
+        }
+    }
+
+    // "Отправить баг": тот же отчёт уходит в закрытый канал Discord владельца. Ссылка вшита при сборке (build.bat), в репозитории её нет
+    static class BugReport
+    {
+        public static readonly string Webhook = ReadWebhook();
+
+        public static bool Available { get { return Webhook != null; } }
+
+        // Номер компьютера: 12 цифр. По нему видно, что жалобы с одного компьютера, но не чей он.
+        // Делается хешем из случайного номера, который Windows придумывает при установке (MachineGuid):
+        // не меняется при переустановке программы, а обратно из него ничего не достать.
+        // Не вышло прочитать - 12 случайных цифр, создаются один раз
+        public static string MachineId(Settings ini)
+        {
+            var fixedId = FromWindows();
+            if (fixedId != null) return fixedId;
+            var id = ini.Get("id");
+            if (id == null || !System.Text.RegularExpressions.Regex.IsMatch(id, @"^\d{4}-\d{4}-\d{4}$"))
+            {
+                var bytes = Guid.NewGuid().ToByteArray();
+                var digits = new StringBuilder();
+                for (int i = 0; i < 12; i++) digits.Append(bytes[i] % 10);
+                id = digits.ToString(0, 4) + "-" + digits.ToString(4, 4) + "-" + digits.ToString(8, 4);
+                ini.Set("id", id);
+            }
+            return id;
+        }
+
+        static string FromWindows()
+        {
+            try
+            {
+                using (var hive = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.LocalMachine, Microsoft.Win32.RegistryView.Registry64))
+                using (var key = hive.OpenSubKey(@"SOFTWARE\Microsoft\Cryptography"))
+                {
+                    var guid = key == null ? null : key.GetValue("MachineGuid") as string;
+                    if (string.IsNullOrEmpty(guid)) return null;
+                    byte[] hash;
+                    using (var sha = System.Security.Cryptography.SHA256.Create())
+                        hash = sha.ComputeHash(Encoding.UTF8.GetBytes("zapret-tray-pc|" + guid.Trim().ToLowerInvariant()));
+                    var digits = new StringBuilder();
+                    for (int i = 0; i < 12; i++) digits.Append(hash[i] % 10);
+                    return digits.ToString(0, 4) + "-" + digits.ToString(4, 4) + "-" + digits.ToString(8, 4);
+                }
+            }
+            catch { return null; }
+        }
+        static string ReadWebhook()
+        {
+            try
+            {
+                using (var s = typeof(BugReport).Assembly.GetManifestResourceStream("webhook.txt"))
+                {
+                    if (s == null) return null;
+                    var url = new StreamReader(s).ReadToEnd().Trim();
+                    return url.StartsWith("https://discord.com/api/webhooks/") || url.StartsWith("https://discordapp.com/api/webhooks/") ? url : null;
+                }
+            }
+            catch { return null; }
+        }
+
+        // Сообщение: что написал человек и вывод отчёта, сам отчёт - файлом. true - дошло
+        public static bool Send(string url, string comment, string report, out string error, string who = null)
+        {
+            error = null;
+            try
+            {
+                ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;   // TLS 1.2
+                var summary = Section(report, "=== ВЫВОД ===");
+                var content = "**Баг" + (string.IsNullOrEmpty(who) ? "" : " от " + who) + ", версия " + AppInfo.Version + "**\n"
+                    + (comment.Trim().Length > 0 ? "> " + comment.Trim().Replace("\n", "\n> ") + "\n" : "")
+                    + summary;
+                if (content.Length > 1900) content = content.Substring(0, 1900) + "…";   // у Discord предел 2000 знаков
+                using (var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) })
+                using (var form = new MultipartFormDataContent())
+                {
+                    form.Add(new StringContent(Payload(content), Encoding.UTF8, "application/json"), "payload_json");
+                    var file = new ByteArrayContent(new UTF8Encoding(true).GetBytes(report));
+                    file.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+                    form.Add(file, "files[0]", "zapret-report.txt");
+                    var answer = http.PostAsync(url, form).Result;
+                    if (answer.IsSuccessStatusCode) return true;
+                    error = "сервер ответил " + (int)answer.StatusCode;
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                var inner = ex is AggregateException && ex.InnerException != null ? ex.InnerException : ex;
+                error = inner.Message;
+                return false;
+            }
+        }
+
+        // Строки раздела отчёта до следующего заголовка
+        static string Section(string report, string title)
+        {
+            var lines = report.Replace("\r", "").Split('\n');
+            int start = Array.IndexOf(lines, title);
+            if (start < 0) return "";
+            return string.Join("\n", lines.Skip(start + 1).TakeWhile(l => !l.StartsWith("===")).Where(l => l.Trim().Length > 0));
+        }
+
+        // Упоминания выключены: текст из отчёта не позовёт никого в канале
+        public static string Payload(string content)
+        {
+            var o = new StringBuilder("{\"content\":\"");
+            foreach (var c in content)
+            {
+                if (c == '"') o.Append("\\\"");
+                else if (c == '\\') o.Append("\\\\");
+                else if (c == '\n') o.Append("\\n");
+                else if (c < ' ') o.Append("\\u").Append(((int)c).ToString("x4"));
+                else o.Append(c);
+            }
+            return o.Append("\",\"allowed_mentions\":{\"parse\":[]}}").ToString();
         }
     }
 }

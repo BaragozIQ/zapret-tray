@@ -17,7 +17,7 @@ namespace ZapretTray
     static class AppInfo
     {
         public const string Name = "Zapret Tray";
-        public const string Version = "0.6";
+        public const string Version = "0.7";
         public const string RunTask = "ZapretTray";
         public const string AutoTask = "ZapretTray Autostart";
         public const string TrayExe = "ZapretTray.exe";
@@ -552,9 +552,10 @@ namespace ZapretTray
             return values.TryGetValue(key, out v) ? v : null;
         }
 
+        // null - убрать ключ совсем
         public void Set(string key, string value)
         {
-            values[key] = value;
+            if (value == null) values.Remove(key); else values[key] = value;
             Save();
         }
 

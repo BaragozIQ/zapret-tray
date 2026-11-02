@@ -100,6 +100,100 @@ namespace ZapretTray
         }
     }
 
+    // TextRenderer Windows не слушается масштаба Graphics. Эта обёртка с тем же именем подменяет его во всей программе:
+    // переводит прямоугольник в точки экрана и увеличивает шрифт. Без масштаба работает как обычный.
+    // Мерить всегда на 96 точках на дюйм: так размеры совпадают с раскладкой окна при любом масштабе
+    static class TextRenderer
+    {
+        static readonly System.Collections.Generic.Dictionary<Tuple<Font, int>, Font> scaled = new System.Collections.Generic.Dictionary<Tuple<Font, int>, Font>();
+        static Graphics measure;
+
+        public static Font Scaled(Font font, float factor)
+        {
+            int key = (int)Math.Round(factor * 100);
+            if (key == 100) return font;
+            Font f;
+            var k = Tuple.Create(font, key);
+            if (!scaled.TryGetValue(k, out f)) scaled[k] = f = new Font(font.FontFamily, font.Size * key / 100f, font.Style, font.Unit);
+            return f;
+        }
+
+        static Graphics Measure
+        {
+            get
+            {
+                if (measure == null) measure = Graphics.FromImage(new Bitmap(1, 1));
+                return measure;
+            }
+        }
+
+        static bool Plain(IDeviceContext dc, out Graphics g)
+        {
+            g = dc as Graphics;
+            return g == null || g.Transform.IsIdentity;
+        }
+
+        // Прямоугольник в точках экрана и во сколько раз увеличить шрифт (часть масштаба Windows уже даёт сама, через DPI)
+        static Rectangle Device(Graphics g, Rectangle r, out float fontFactor)
+        {
+            using (var m = g.Transform)
+            {
+                var p = new[] { new PointF(r.Left, r.Top), new PointF(r.Right, r.Bottom) };
+                m.TransformPoints(p);
+                fontFactor = m.Elements[0] * 96f / g.DpiX;
+                return Rectangle.FromLTRB((int)Math.Round(p[0].X), (int)Math.Round(p[0].Y), (int)Math.Round(p[1].X), (int)Math.Round(p[1].Y));
+            }
+        }
+
+        public static void DrawText(IDeviceContext dc, string text, Font font, Rectangle bounds, Color fore, TextFormatFlags flags)
+        {
+            Graphics g;
+            if (Plain(dc, out g)) { System.Windows.Forms.TextRenderer.DrawText(dc, text, font, bounds, fore, flags); return; }
+            float k;
+            var r = Device(g, bounds, out k);
+            var state = g.Save();
+            g.ResetTransform();
+            System.Windows.Forms.TextRenderer.DrawText(g, text, Scaled(font, k), r, fore, flags);
+            g.Restore(state);
+        }
+
+        public static void DrawText(IDeviceContext dc, string text, Font font, Rectangle bounds, Color fore, Color back, TextFormatFlags flags)
+        {
+            Graphics g;
+            if (Plain(dc, out g)) { System.Windows.Forms.TextRenderer.DrawText(dc, text, font, bounds, fore, back, flags); return; }
+            float k;
+            var r = Device(g, bounds, out k);
+            var state = g.Save();
+            g.ResetTransform();
+            System.Windows.Forms.TextRenderer.DrawText(g, text, Scaled(font, k), r, fore, back, flags);
+            g.Restore(state);
+        }
+
+        public static void DrawText(IDeviceContext dc, string text, Font font, Point at, Color fore)
+        {
+            DrawText(dc, text, font, at, fore, TextFormatFlags.Default);
+        }
+
+        public static void DrawText(IDeviceContext dc, string text, Font font, Point at, Color fore, TextFormatFlags flags)
+        {
+            Graphics g;
+            if (Plain(dc, out g)) { System.Windows.Forms.TextRenderer.DrawText(dc, text, font, at, fore, flags); return; }
+            DrawText(dc, text, font, new Rectangle(at, MeasureText(text, font, Size.Empty, flags)), fore, flags);
+        }
+
+        public static void DrawText(IDeviceContext dc, string text, Font font, Rectangle bounds, Color fore)
+        {
+            DrawText(dc, text, font, bounds, fore, TextFormatFlags.Default);
+        }
+
+        public static Size MeasureText(string text, Font font) { return System.Windows.Forms.TextRenderer.MeasureText(Measure, text, font); }
+        public static Size MeasureText(string text, Font font, Size proposed) { return System.Windows.Forms.TextRenderer.MeasureText(Measure, text, font, proposed); }
+        public static Size MeasureText(string text, Font font, Size proposed, TextFormatFlags flags) { return System.Windows.Forms.TextRenderer.MeasureText(Measure, text, font, proposed, flags); }
+        public static Size MeasureText(IDeviceContext dc, string text, Font font) { return MeasureText(text, font); }
+        public static Size MeasureText(IDeviceContext dc, string text, Font font, Size proposed) { return MeasureText(text, font, proposed); }
+        public static Size MeasureText(IDeviceContext dc, string text, Font font, Size proposed, TextFormatFlags flags) { return MeasureText(text, font, proposed, flags); }
+    }
+
     // Пометки пунктов меню через Tag
     static class ItemKind
     {
