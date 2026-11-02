@@ -70,7 +70,15 @@ namespace ZapretTray
         // Значки в меню: результат последней проверки, null - проверки ещё не было
         static readonly string[] MainSites = { "https://www.youtube.com", "https://discord.com" };
         const int HealthCacheSec = 30;
+        const int HealthTimeoutSec = 4;           // значки ждут самый медленный сайт, поэтому короче, чем у сторожа
+        const int HealthRestartDelaySec = 4;      // столько ждём после перезапуска zapret, иначе проверка увидит его ещё не готовым
         string healthMarks;
+        string youtubeTime = "", discordTime = "", sitesTime = "", gameTime = "";   // отклик сайтов: время защищённого соединения
+        string gamePing = "";      // пинг до сервера запущенной игры: "34 мс", "нет ответа" или пусто
+        string runningGame;        // имя процесса запущенной игры с известным сервером
+        bool gamePinging;
+        DateTime gamePingAt = DateTime.MinValue;
+        DateTime healthNotBefore = DateTime.MinValue;
         bool healthProblem, healthVpn, healthChecking;
         int healthGen, healthSites, healthGames;
         DateTime healthAt = DateTime.MinValue;
@@ -286,13 +294,17 @@ namespace ZapretTray
         // Правая кнопка: окно с разделами. Оно рисует те же пункты меню. Если окно не открылось, показываем обычное меню
         void OpenPanel()
         {
-            if (panel != null) return;
+            if (panel != null)
+            {
+                panel.Restore();
+                return;
+            }
             ApplyTheme();
             CheckHealth();
             RefreshMenu();
             try
             {
-                panel = new ControlPanel(statusItem, healthItem, statsItem, () => renderer.StatusColor,
+                panel = new ControlPanel(statusItem, healthItem, statsItem, () => renderer.StatusColor, () => youtubeTime + "\t" + discordTime + "\t" + GameTimes() + "\t" + sitesTime,
                     new[] { gamesItem, sitesItem, repairItem, settingsItem, hintsItem }, new[] { fastItem, reportItem }, toggleItem, exitItem, () => { RefreshMenu(); },
                     new Dictionary<ToolStripMenuItem, IPanelView>
                     {
@@ -302,6 +314,7 @@ namespace ZapretTray
                             entry => RemoveSite(entry.Item1, entry.Item2)) },
                         { hintsItem, new HintsView() }
                     });
+                panel.RunningGame = () => runningGame;
                 panel.FormClosed += (s, e) => panel = null;
                 panel.ShowCentered();
             }
@@ -454,12 +467,12 @@ namespace ZapretTray
         // Открыли меню: проверяем сайты в фоне. Меню не ждёт, значки обновятся прямо в нём
         void CheckHealth()
         {
+            if (busy || healthChecking || DateTime.UtcNow < healthNotBefore || !Util.WinwsRunning()) return;
+            if (healthMarks != null && (DateTime.UtcNow - healthAt).TotalSeconds < HealthCacheSec) return;
             var presets = EnabledPresets();
             healthSites = UserSites().Count;
             healthGames = presets.Count;
-            if (busy || healthChecking || !Util.WinwsRunning()) return;
-            if (healthMarks != null && (DateTime.UtcNow - healthAt).TotalSeconds < HealthCacheSec) return;
-            ResetHealth();
+            // Старый результат остаётся на экране, пока не придёт новый
             healthChecking = true;
             int gen = healthGen;
             var sites = UserSites();
@@ -467,7 +480,11 @@ namespace ZapretTray
             {
                 var vpn = Util.RunningVpn();
                 var gameUrls = presets.SelectMany(p => p.Item2).Select(d => "https://" + d);
-                return Tuple.Create(SiteCheck.RunAll(MainSites.Concat(sites).Concat(gameUrls), 8), vpn != null);
+                var checks = MainSites.Concat(sites).ToList();
+                // Настоящий пинг, как в играх: параллельно, чтобы один молчащий сайт не задерживал остальные
+                var icmp = checks.Select(u => Task.Factory.StartNew(() => IcmpMs(u.Replace("https://", "")), TaskCreationOptions.LongRunning)).ToList();
+                var opened = SiteCheck.RunAll(checks.Concat(gameUrls), HealthTimeoutSec);
+                return Tuple.Create(opened, vpn != null, icmp.Select(p => p.Result).ToList());
             }).ContinueWith(t => OnUi(() =>
             {
                 healthChecking = false;
@@ -476,7 +493,12 @@ namespace ZapretTray
                     Logger.Write("значки: " + t.Exception.InnerException.Message);
                     return;
                 }
-                if (gen != healthGen) return;   // пока проверяли, zapret перезапустился: результат уже не про него
+                if (gen != healthGen)
+                {
+                    // Пока проверяли, что-то изменилось: результат устарел, сразу проверяем заново
+                    if (panel != null) CheckHealth();
+                    return;
+                }
                 var res = t.Result.Item1;
                 var main = res.Take(MainSites.Length).ToList();
                 var mine = res.Skip(MainSites.Length).Take(sites.Count).ToList();
@@ -484,8 +506,18 @@ namespace ZapretTray
                 // Игра считается рабочей, если отвечает хотя бы один её адрес: не все адреса игр открываются как сайт
                 int gamesOk = presets.Count(p => p.Item2.Any(d => gameSites.Any(x => x.Opened && x.Url == "https://" + d)));
                 healthMarks = string.Join("\t", main.Select(x => x.Opened ? "✓" : "✗"))
-                    + "\t" + (presets.Count == 0 ? "" : presets.Count > 1 ? gamesOk + "/" + presets.Count : gamesOk == 1 ? "✓" : "✗")
-                    + "\t" + (mine.Count > 0 ? mine.Count(x => x.Opened) + "/" + mine.Count : "");
+                    + "\t" + (presets.Count == 0 ? "" : presets.Count > 1 ? CountMark(gamesOk, presets.Count) : gamesOk == 1 ? "✓" : "✗")
+                    + "\t" + (mine.Count > 0 ? CountMark(mine.Count(x => x.Opened), mine.Count) : "");
+                var gameAnswered = gameSites.Where(x => x.Opened && x.TlsMs >= 1).ToList();
+                gameTime = gameAnswered.Count > 0 ? "отклик " + (int)gameAnswered.Min(x => x.TlsMs) + " мс" : "";
+                var ping = t.Result.Item3;
+                youtubeTime = TimesOf(main[0], ping[0]);
+                discordTime = TimesOf(main[1], ping[1]);
+                var answered = mine.Where(x => x.Opened && x.TlsMs >= 1).ToList();
+                var sitePings = ping.Skip(MainSites.Length).Where(x => x >= 0).ToList();
+                sitesTime = (answered.Count > 0 ? "отклик " + (int)answered.Average(x => x.TlsMs) + " мс" : "")
+                    + (answered.Count > 0 && sitePings.Count > 0 ? "\n" : "")
+                    + (sitePings.Count > 0 ? "пинг " + (int)sitePings.Average() + " мс" : "");
                 healthProblem = main.Any(x => !x.Opened);
                 healthVpn = t.Result.Item2;
                 healthAt = DateTime.UtcNow;
@@ -493,17 +525,70 @@ namespace ZapretTray
             }));
         }
 
-        // zapret перезапустился или выключился: прошлый результат больше не верен
+        // Отклик - время защищённого соединения, пинг - как в играх. Сервер может не отвечать на пинг, тогда только отклик
+        static string TimesOf(SiteResult r, long ping)
+        {
+            var time = r.Opened && r.TlsMs >= 1 ? "отклик " + (int)r.TlsMs + " мс" : "";
+            var icmp = ping >= 0 ? "пинг " + ping + " мс" : "";
+            return time + (time.Length > 0 && icmp.Length > 0 ? "\n" : "") + icmp;
+        }
+
+        // Пока данных нет, плитка игр пустая, как у всех. С данными - те же две строки
+        string GameTimes()
+        {
+            if (gameTime.Length == 0 && gamePing.Length == 0) return "";
+            return (gameTime.Length > 0 ? gameTime + "\n" : "") + "пинг " + (gamePing.Length > 0 ? gamePing : "—");
+        }
+
+        // Всё открылось - галочка. Цифры только когда что-то не так
+        static string CountMark(int ok, int total)
+        {
+            return ok == total ? "✓" : ok + "/" + total;
+        }
+
+        static long IcmpMs(string host)
+        {
+            try
+            {
+                using (var p = new System.Net.NetworkInformation.Ping())
+                {
+                    var r = p.Send(host, 1500);
+                    return r.Status == System.Net.NetworkInformation.IPStatus.Success ? r.RoundtripTime : -1;
+                }
+            }
+            catch { return -1; }
+        }
+
+        // Правка списков без перезапуска: проверяем заново сразу. Идущую проверку отбрасываем, её результат уже устарел
+        void RecheckHealthNow()
+        {
+            healthGen++;
+            healthAt = DateTime.MinValue;
+            healthNotBefore = DateTime.MinValue;
+            if (panel != null) CheckHealth();
+        }
+
+        // zapret коротко перезапустился. Значки не трогаем, просто проверяем заново чуть позже
+        void RecheckHealthSoon()
+        {
+            healthGen++;
+            healthAt = DateTime.MinValue;
+            healthNotBefore = DateTime.UtcNow.AddSeconds(HealthRestartDelaySec);
+        }
+
+        // zapret выключился или подбирает новый конфиг: прошлый результат больше не верен
         void ResetHealth()
         {
             healthGen++;
             healthMarks = null;
+            youtubeTime = discordTime = sitesTime = gameTime = "";
             healthProblem = healthVpn = false;
         }
 
         void UpdateState()
         {
             UpdateSpeed();
+            if (panel != null && panel.Visible) CheckHealth();
             UpdateLabels();
         }
 
@@ -575,6 +660,8 @@ namespace ZapretTray
             txPrev = tx;
             speedAt = now;
 
+            UpdateGamePing(now);
+
             // Пинг - в фоне раз в 10 секунд, чтобы не подвешивать меню
             if (!pinging && (now - pingAt).TotalSeconds >= 10)
             {
@@ -593,6 +680,38 @@ namespace ZapretTray
                     catch { return -1L; }
                 }).ContinueWith(t => OnUi(() => { pingMs = t.Result; pinging = false; }));
             }
+        }
+
+        // Настоящий пинг до сервера игры, пока она запущена. Сервер берём из соединений самой игры
+        void UpdateGamePing(DateTime now)
+        {
+            if (gamePinging || (now - gamePingAt).TotalSeconds < 5) return;
+            gamePingAt = now;
+            var game = games.Games.ToList().FirstOrDefault(g => g.Enabled && g.LastServer != null && gamesRunning.Contains(g.Exe));
+            runningGame = game != null ? game.Exe : null;
+            if (game == null)
+            {
+                gamePing = "";
+                return;
+            }
+            var server = game.LastServer;
+            gamePinging = true;
+            Task.Factory.StartNew(() =>
+            {
+                try
+                {
+                    using (var p = new System.Net.NetworkInformation.Ping())
+                    {
+                        var r = p.Send(server, 1500);
+                        return r.Status == System.Net.NetworkInformation.IPStatus.Success ? r.RoundtripTime : -1;
+                    }
+                }
+                catch { return -1L; }
+            }).ContinueWith(t => OnUi(() =>
+            {
+                gamePinging = false;
+                gamePing = t.Result >= 0 ? t.Result + " мс" : "нет ответа";
+            }));
         }
 
         static string FormatSpeed(double bytesPerSec)
@@ -758,7 +877,7 @@ namespace ZapretTray
                 RunSelect("fast", false, false);
                 return;
             }
-            ResetHealth();
+            RecheckHealthSoon();
             Util.KillWinws();
             Selector.StartConfig(paths, bat);
         }
@@ -874,7 +993,7 @@ namespace ZapretTray
                 changed = Util.AppendUnique(paths.ListGeneralUser, value);
                 changed |= Util.RemoveEntry(paths.ListExcludeUser, value);
             }
-            if (changed || note.Length > 0) RestartCurrent();
+            if (changed || note.Length > 0) RecheckHealthNow();   // winws сам перечитывает изменившиеся списки, перезапуск не нужен
             return note;
         }
 
@@ -903,7 +1022,7 @@ namespace ZapretTray
                 else if (!on && plain < 0) lines.Add(d);
             }
             Util.WriteLinesAtomic(file, lines);
-            RestartCurrent();
+            RecheckHealthNow();
         }
 
         // Мои сайты: (значение, файл, исключён ли). Заглушки из шаблонов zapret и домены встроенных игр не показываем
@@ -929,7 +1048,7 @@ namespace ZapretTray
         {
             Util.RemoveEntry(file, value);
             if (file == paths.IpsetUser || file == paths.IpsetExcludeUser) ReapplyIpset();
-            RestartCurrent();
+            RecheckHealthNow();
         }
 
         bool IsIpFile(string file)
@@ -1353,6 +1472,7 @@ namespace ZapretTray
             var name = ProcessName(pid);
             if (name.Length == 0 || !exes.Contains(name)) return;
             var g = games.Find(name);
+            if (g != null) g.LastServer = new System.Net.IPAddress(ip).ToString();
             if (g != null && games.AddSubnet(g, Util.Subnet24(ip)))
             {
                 Logger.Write("игра " + g.Exe + ": новый адрес, порт " + port);
@@ -1369,7 +1489,9 @@ namespace ZapretTray
                 if (pids.Count == 0) continue;
                 foreach (var r in TcpTable.RemoteAddresses(pids))
                 {
-                    if (Util.IsGameServer(r.Item1, r.Item2) && games.AddSubnet(g, Util.Subnet24(r.Item1))) gamesDirty = true;
+                    if (!Util.IsGameServer(r.Item1, r.Item2)) continue;
+                    g.LastServer = new System.Net.IPAddress(r.Item1).ToString();
+                    if (games.AddSubnet(g, Util.Subnet24(r.Item1))) gamesDirty = true;
                 }
             }
         }

@@ -4,7 +4,7 @@
 setlocal
 cd /d "%~dp0"
 set "CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-set "OPTS=/nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 /win32icon:src\app.ico /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Net.Http.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll"
+set "OPTS=/nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 /win32icon:src\app.ico /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.ServiceProcess.dll /r:System.Net.Http.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll"
 
 :: Version comes from AppInfo.Version in src\Common.cs
 for /f "tokens=6" %%v in ('findstr /c:"string Version = " src\Common.cs') do set "VER=%%~v"
@@ -15,7 +15,7 @@ set "VER=%VER:"=%"
 if not exist dist mkdir dist
 powershell -NoProfile -ExecutionPolicy Bypass -File src\make-icon.ps1 -Out src\app.ico || goto :fail
 
-"%CSC%" %OPTS% /win32manifest:src\tray.manifest /out:dist\ZapretTray.exe src\Common.cs src\DnsFix.cs src\SiteCheck.cs src\Games.cs src\Updater.cs src\Theme.cs src\Selector.cs src\SettingsFile.cs src\HintsWindow.cs src\ControlPanel.cs src\Tray.cs || goto :fail
+"%CSC%" %OPTS% /win32manifest:src\tray.manifest /res:src\icons\arc.png,arc.png /res:src\icons\wardogs.png,wardogs.png /out:dist\ZapretTray.exe src\Common.cs src\DnsFix.cs src\SiteCheck.cs src\Games.cs src\Updater.cs src\Theme.cs src\Selector.cs src\SettingsFile.cs src\HintsWindow.cs src\ControlPanel.cs src\Tray.cs || goto :fail
 "%CSC%" %OPTS% /win32manifest:src\setup.manifest /out:dist\Setup.exe src\Common.cs src\DnsFix.cs src\Theme.cs src\Setup.cs || goto :fail
 
 robocopy payload\core dist\core /MIR /NFL /NDL /NJH /NJS /NP >nul

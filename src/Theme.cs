@@ -12,19 +12,23 @@ namespace ZapretTray
     class Palette
     {
         public Color Back, Hover, Text, SubText, Disabled, Separator, Border, Check, Card, Tile;
+        public Color Accent2;       // второй цвет акцентного перелива
+        public float Shine = 1f;    // сила свечения и переливов: на тёмном фоне они заметнее, поэтому там слабее
 
         public static readonly Palette Dark = new Palette
         {
-            Back = Color.FromArgb(32, 33, 37), Hover = Color.FromArgb(52, 54, 60), Card = Color.FromArgb(43, 45, 51), Tile = Color.FromArgb(56, 58, 66),
-            Text = Color.FromArgb(242, 243, 245), SubText = Color.FromArgb(181, 186, 193), Disabled = Color.FromArgb(110, 114, 122),
-            Separator = Color.FromArgb(63, 65, 71), Border = Color.FromArgb(18, 19, 22), Check = Color.FromArgb(88, 101, 242)
+            Back = Color.FromArgb(28, 28, 28), Hover = Color.FromArgb(52, 52, 52), Card = Color.FromArgb(40, 40, 40), Tile = Color.FromArgb(56, 56, 56),
+            Text = Color.FromArgb(240, 240, 240), SubText = Color.FromArgb(172, 172, 172), Disabled = Color.FromArgb(112, 112, 112),
+            Separator = Color.FromArgb(52, 52, 52), Border = Color.FromArgb(58, 58, 58), Check = Color.FromArgb(0, 103, 192),
+            Accent2 = Color.FromArgb(24, 120, 214), Shine = 0.3f
         };
 
         public static readonly Palette Light = new Palette
         {
             Back = Color.FromArgb(249, 249, 249), Hover = Color.FromArgb(234, 234, 234), Card = Color.FromArgb(240, 240, 241), Tile = Color.FromArgb(252, 252, 252),
             Text = Color.FromArgb(26, 26, 26), SubText = Color.FromArgb(95, 95, 95), Disabled = Color.FromArgb(160, 160, 160),
-            Separator = Color.FromArgb(224, 224, 224), Border = Color.FromArgb(208, 208, 208), Check = Color.FromArgb(0, 103, 192)
+            Separator = Color.FromArgb(224, 224, 224), Border = Color.FromArgb(208, 208, 208), Check = Color.FromArgb(0, 103, 192),
+            Accent2 = Color.FromArgb(40, 130, 240)
         };
     }
 
@@ -695,6 +699,46 @@ namespace ZapretTray
             using (var p = new Pen(Color.White, 1.6f)) g.DrawLine(p, x + 9, cy - 2, x + 9, cy + 3);
             g.FillEllipse(Brushes.White, x + 6.5f, cy - 5.5f, 5, 5);
             using (var path = RoundRect(new Rectangle(x + 4, cy + 2, 10, 3), 1)) g.FillPath(Brushes.White, path);
+        }
+
+        // Спидометр: стрелка от 0 до 1
+        public static void DrawSpeedometer(Graphics g, double level, int x, int cy)
+        {
+            using (var path = RoundRect(new Rectangle(x, cy - 7, 18, 14), 4))
+            using (var b = new SolidBrush(Color.FromArgb(18, 165, 148))) g.FillPath(b, path);
+            using (var p = new Pen(Color.FromArgb(120, Color.White), 1.1f)) g.DrawArc(p, x + 3.5f, cy - 4.5f, 11, 11, 180, 180);
+            using (var p = new Pen(Color.White, 1.1f)) g.DrawArc(p, x + 3.5f, cy - 4.5f, 11, 11, 180, (float)(180 * level));
+            double angle = Math.PI * (1 + level);
+            using (var p = new Pen(Color.White, 1.1f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                g.DrawLine(p, x + 9, cy + 1, x + 9 + (float)(Math.Cos(angle) * 4), cy + 1 + (float)(Math.Sin(angle) * 4));
+            g.FillEllipse(Brushes.White, x + 8, cy, 2, 2);
+        }
+
+        // Полоски связи: сколько горит, от 0 до 4
+        public static void DrawSignal(Graphics g, int bars, int x, int cy)
+        {
+            using (var path = RoundRect(new Rectangle(x, cy - 7, 18, 14), 4))
+            using (var b = new SolidBrush(Color.FromArgb(142, 84, 233))) g.FillPath(b, path);
+            using (var dim = new SolidBrush(Color.FromArgb(90, Color.White)))
+                for (int i = 0; i < 4; i++)
+                {
+                    int height = 3 + i * 2;
+                    g.FillRectangle(i < bars ? Brushes.White : dim, x + 3.75f + i * 2.75f, cy + 4.5f - height, 1.75f, height);
+                }
+        }
+
+        // Секундомер: стрелка от 0 до 1 за круг
+        public static void DrawStopwatch(Graphics g, double turn, int x, int cy)
+        {
+            using (var path = RoundRect(new Rectangle(x, cy - 7, 18, 14), 4))
+            using (var b = new SolidBrush(Color.FromArgb(222, 70, 128))) g.FillPath(b, path);
+            double angle = 2 * Math.PI * turn - Math.PI / 2;
+            using (var p = new Pen(Color.White, 1.1f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                g.DrawEllipse(p, x + 4.5f, cy - 3.5f, 9, 9);
+                g.DrawLine(p, x + 7.5f, cy - 5.5f, x + 10.5f, cy - 5.5f);
+                g.DrawLine(p, x + 9, cy + 1, x + 9 + (float)(Math.Cos(angle) * 3), cy + 1 + (float)(Math.Sin(angle) * 3));
+            }
         }
 
         protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e)

@@ -6,6 +6,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.NetworkInformation;
+using System.ServiceProcess;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -26,6 +27,34 @@ namespace ZapretTray
         public SiteStatus Status;
         public double TlsMs;
         public int CurlExit;
+        public bool Measured;     // curl успел сказать, докуда дошло соединение
+        public bool Connected;    // подключились к адресу
+        public bool TlsDone;      // шифрованное соединение установилось
+        public long Bytes;        // сколько успело загрузиться
+        public string HttpCode;
+
+        // Докуда дошло: от этого зависит лечение. Адрес недоступен - конфиг может не помочь, обрыв на шифровании или заморозка - его дело
+        public string Stage
+        {
+            get
+            {
+                if (!Measured) return "";
+                if (!Connected) return "не подключился к адресу";
+                if (!TlsDone) return "подключился, шифрование оборвалось";
+                return Bytes > 0 ? "начал загружаться и завис на " + Bytes / 1024 + " КБ" : "соединился, сервер не ответил";
+            }
+        }
+
+        // Строка для отчёта: у открывшегося сайта цифры, у остального этап
+        public string Details
+        {
+            get
+            {
+                if (!Measured) return Text;
+                if (Opened) return Text + " (HTTP " + HttpCode + ", шифрование " + (int)Math.Round(TlsMs) + " мс)";
+                return Status == SiteStatus.NoConnect ? Text + ": " + Stage : Text;
+            }
+        }
 
         public bool Opened { get { return Status == SiteStatus.Ok || Status == SiteStatus.OkViaSecureDns; } }
         public bool DnsProblem { get { return Status == SiteStatus.OkViaSecureDns || Status == SiteStatus.NoDns; } }
@@ -97,7 +126,7 @@ namespace ZapretTray
         // Полный GET (а не HEAD), чтобы ловить и "заморозку" на 16-20 КБ. true - сервер ответил любым HTTP-кодом
         static bool Probe(string url, string doh, int timeoutSec, SiteResult r)
         {
-            var args = "-s -o NUL -m " + timeoutSec + " --connect-timeout 3 -w \"%{http_code} %{time_connect} %{time_appconnect}\" ";
+            var args = "-s -o NUL -m " + timeoutSec + " --connect-timeout 3 -w \"%{http_code} %{time_connect} %{time_appconnect} %{size_download}\" ";
             if (doh != null) args += "--doh-url " + doh + " ";
             var psi = new ProcessStartInfo(Curl, args + "\"" + url + "\"")
             {
@@ -107,17 +136,11 @@ namespace ZapretTray
             {
                 using (var p = Process.Start(psi))
                 {
-                    var parts = p.StandardOutput.ReadToEnd().Trim().Split(' ');
+                    var output = p.StandardOutput.ReadToEnd();
                     p.WaitForExit();
-                    double connect = 0, app = 0;
-                    if (parts.Length > 2)
-                    {
-                        double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out connect);
-                        double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out app);
-                    }
                     r.CurlExit = p.ExitCode;
-                    r.TlsMs = Math.Max(0, (app - connect) * 1000);
-                    return p.ExitCode == 0 && parts.Length > 0 && parts[0] != "000";
+                    ReadOutput(output, r);
+                    return p.ExitCode == 0 && r.HttpCode != "000";
                 }
             }
             catch
@@ -125,6 +148,26 @@ namespace ZapretTray
                 r.CurlExit = -1;
                 return false;
             }
+        }
+
+        // Ответ curl: "код время_подключения время_шифрования байты"
+        public static void ReadOutput(string output, SiteResult r)
+        {
+            var parts = output.Trim().Split(' ');
+            double connect = 0, app = 0;
+            long bytes = 0;
+            r.HttpCode = parts[0].Length > 0 ? parts[0] : "000";
+            r.Measured = parts.Length > 3;
+            if (r.Measured)
+            {
+                double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out connect);
+                double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out app);
+                long.TryParse(parts[3], out bytes);
+            }
+            r.Connected = connect > 0;
+            r.TlsDone = app > 0;
+            r.Bytes = bytes;
+            r.TlsMs = Math.Max(0, (app - connect) * 1000);
         }
 
         // Все сайты параллельно, результат в том же порядке
@@ -144,19 +187,102 @@ namespace ZapretTray
         static readonly string[] DnsServers = { null, "1.1.1.1", "8.8.8.8", "9.9.9.9" };   // null - DNS Windows
         // Другие обходчики: вместе с zapret они мешают друг другу
         static readonly string[] OtherBypass = { "goodbyedpi", "byedpi", "ciadpi", "spoofdpi", "warp-svc" };
+        // Обычно не заблокированы: не открылись и они - беда общая, а не блокировка
+        static readonly string[] ControlSites = { "https://ya.ru", "https://www.microsoft.com" };
+        static readonly string[] EngineFiles = { "winws.exe", "cygwin1.dll", "WinDivert.dll", "WinDivert64.sys" };
+        // Службы, которые известны тем, что мешают WinDivert: сетевые "ускорители" и фильтры
+        static readonly string[] ConflictServices = { "killer", "smartbyte", "check point", "checkpoint", "intel connectivity", "adguard" };
+
+        // Состояние компьютера без единого обращения в сеть: то, что ломает zapret на любой сети
+        public class LocalState
+        {
+            public List<string> MissingFiles = new List<string>();
+            public List<string> Conflicts = new List<string>();
+            public List<string> Antivirus = new List<string>();
+            public string Bfe, Driver, Timestamps;
+            public int WinwsCount;
+            public string WinwsSince = "";
+        }
+
+        public static LocalState ReadLocalState(AppPaths paths)
+        {
+            var s = new LocalState();
+            s.MissingFiles = EngineFiles.Where(n => !File.Exists(Path.Combine(paths.Bin, n))).ToList();
+            s.Bfe = ServiceState("BFE");
+            s.Driver = ServiceState("WinDivert");
+
+            string output;
+            s.Conflicts = FindConflicts(RunningServiceNames());
+
+            // Названия приходят в base64: кодировка вывода команд зависит от настроек Windows, а название может быть русским
+            Util.Run("powershell.exe", "-NoProfile -NonInteractive -Command \"$n = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct | ForEach-Object { $_.displayName }; [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($n -join '|')))\"", out output, 20000);
+            try
+            {
+                var encoded = Regex.Match(output, @"^[A-Za-z0-9+/]+=*\s*$", RegexOptions.Multiline).Value.Trim();
+                s.Antivirus = Encoding.UTF8.GetString(Convert.FromBase64String(encoded)).Split('|').Where(n => n.Length > 0).Distinct().ToList();
+            }
+            catch (FormatException) { }
+
+            Util.Run("netsh.exe", "interface tcp show global", out output, 15000);
+            var stamp = Regex.Match(output, @"^.*(1323|timestamps).*$", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+            // Берём только значение после двоеточия: название строки переведено, и кодировка у него бывает разная. В китайской Windows двоеточие широкое
+            s.Timestamps = stamp.Success ? stamp.Value.Substring(stamp.Value.LastIndexOfAny(new[] { ':', '：' }) + 1).Trim() : "не удалось узнать";
+
+            var running = Process.GetProcessesByName("winws");
+            s.WinwsCount = running.Length;
+            try { if (running.Length > 0) s.WinwsSince = running[0].StartTime.ToString("HH:mm:ss"); } catch { }
+            return s;
+        }
+
+        // Службы спрашиваем у системы, а не читаем текст команды sc: ответ не зависит от языка Windows
+        static IEnumerable<string> RunningServiceNames()
+        {
+            try
+            {
+                var services = ServiceController.GetServices();
+                var names = services.Where(x => x.Status == ServiceControllerStatus.Running).SelectMany(x => new[] { x.ServiceName, x.DisplayName }).ToList();
+                foreach (var x in services) x.Dispose();
+                return names;
+            }
+            catch { return new string[0]; }
+        }
+
+        public static List<string> FindConflicts(IEnumerable<string> names)
+        {
+            return names.Where(n => ConflictServices.Any(c => n.IndexOf(c, StringComparison.OrdinalIgnoreCase) >= 0))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        // "Running", "Stopped" или "нет"
+        static string ServiceState(string name)
+        {
+            try
+            {
+                using (var service = new ServiceController(name)) return service.Status.ToString();
+            }
+            catch (InvalidOperationException) { return "нет"; }
+        }
 
         // Короткий вывод в начале отчёта: что не так и куда смотреть. Работает одинаково на любом компьютере
-        static List<string> Conclusions(bool winws, bool internet, string vpn, List<string> others, bool service, List<SiteResult> sites, bool dnsFixed)
+        static List<string> Conclusions(bool winws, bool internet, string vpn, List<string> others, bool service, List<SiteResult> sites, bool dnsFixed, LocalState local, List<SiteResult> control)
         {
             var o = new List<string>();
             if (!internet) o.Add("Нет интернета: дело не в программе.");
-            if (!winws) o.Add("zapret не запущен: обхода сейчас нет.");
+            if (local.MissingFiles.Count > 0) o.Add("Нет файлов zapret: " + string.Join(", ", local.MissingFiles) + ". Обычно их удаляет антивирус: переустановить и добавить папку в его исключения.");
+            if (local.Bfe != "Running") o.Add("Служба Base Filtering Engine (BFE): " + local.Bfe + ". Без неё zapret не работает, нужно включить.");
+            if (!winws) o.Add("zapret не запущен: обхода сейчас нет." + (local.Antivirus.Count > 0 ? " Антивирус: " + string.Join(", ", local.Antivirus) + ", проверить, не блокирует ли он." : ""));
+            if (local.WinwsCount > 1) o.Add("Запущено несколько winws (" + local.WinwsCount + "): мешают друг другу.");
+            if (local.Conflicts.Count > 0) o.Add("Запущено то, что может мешать: " + string.Join(", ", local.Conflicts) + ".");
+            if (internet && control.Count > 0 && control.All(r => !r.Opened)) o.Add("Не открываются даже обычные незаблокированные сайты: беда общая (антивирус, прокси, время на часах), а не блокировка.");
             if (service) o.Add("Установлена служба zapret: она мешает, нужно убрать через Setup.exe.");
             if (others.Count > 0) o.Add("Запущен другой обходчик (" + string.Join(", ", others) + "): может мешать.");
             if (vpn != null) o.Add("Трафик идёт через VPN (" + vpn + "): проверки ниже показывают его сеть, а не работу zapret.");
-            var noConnect = sites.Where(r => r.Status == SiteStatus.NoConnect).Select(r => r.Url).ToList();
+            var failed = sites.Where(r => r.Status == SiteStatus.NoConnect).ToList();
+            var noAddress = failed.Where(r => r.Measured && !r.Connected).Select(r => r.Url).ToList();
+            var noConnect = failed.Where(r => !r.Measured || r.Connected).Select(r => r.Url).ToList();
+            if (noAddress.Count > 0) o.Add("Не удаётся подключиться к адресу: " + string.Join(", ", noAddress) + ". Похоже на блокировку по IP или проблему сети, другой конфиг может не помочь.");
             var dns = sites.Where(r => r.DnsProblem).Select(r => r.Url).ToList();
-            if (noConnect.Count > 0) o.Add("Адрес есть, но не открывается: " + string.Join(", ", noConnect) + ". Похоже на конфиг, нужен другой.");
+            if (noConnect.Count > 0) o.Add("Соединение обрывается или виснет: " + string.Join(", ", noConnect) + ". Похоже на конфиг, нужен другой.");
             if (dns.Count > 0) o.Add("DNS не находит адрес: " + string.Join(", ", dns) + (dnsFixed ? ". Исправление DNS уже включено." : ". Поможет «Исправить DNS»."));
             if (o.Count == 0) o.Add("Явных проблем не видно: все проверенные сайты открываются.");
             return o;
@@ -185,35 +311,56 @@ namespace ZapretTray
             var dnsFixed = DnsFix.IsApplied(paths);
             var internet = Util.InternetUp();
             var sites = SiteCheck.RunAll(Selector.Targets, 8);
+            var control = SiteCheck.RunAll(ControlSites, 8);
+            var local = ReadLocalState(paths);
             var ini = new Settings(paths.Settings);
 
             o.AppendLine("=== ZAPRET TRAY: ОТЧЁТ ===");
             o.AppendLine(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
             o.AppendLine();
             o.AppendLine("=== ВЫВОД ===");
-            foreach (var line in Conclusions(winws, internet, vpn, others, service, sites, dnsFixed)) o.AppendLine("- " + line);
+            foreach (var line in Conclusions(winws, internet, vpn, others, service, sites, dnsFixed, local, control)) o.AppendLine("- " + line);
 
             o.AppendLine();
             o.AppendLine("=== ПРОГРАММА ===");
             o.AppendLine("Программа " + AppInfo.Version + ", zapret " + ZapretUpdater.LocalVersion(paths));
             o.AppendLine("Windows: сборка " + DnsFix.WindowsBuild());
             o.AppendLine("Статус: " + status);
-            o.AppendLine("winws: " + (winws ? "работает" : "не работает"));
+            o.AppendLine("winws: " + (winws ? "работает, запущено " + local.WinwsCount + ", с " + local.WinwsSince : "не работает"));
             o.AppendLine("Конфиги: " + string.Join(", ", Util.ReadEntries(paths.BestConfig)));
             o.AppendLine("Сторож: " + (ini.GetBool("watchdog", true) ? "включён" : "выключен") + ", автообновление: " + (ini.GetBool("autoupdate", true) ? "включено" : "выключено"));
             o.AppendLine("Игровой фильтр: " + (File.Exists(Path.Combine(paths.Utils, "game_filter.enabled")) ? "включён" : "выключен"));
             o.AppendLine("Служба zapret: " + (service ? "есть" : "нет"));
             o.AppendLine("Другие обходчики: " + (others.Count > 0 ? string.Join(", ", others) : "нет"));
             o.AppendLine("Исправление DNS: " + (dnsFixed ? "включено" : "выключено"));
+            // Только количество: сами записи - личное
+            o.AppendLine("Мои списки: сайтов " + Util.ReadEntries(paths.ListGeneralUser).Count + ", исключений " + Util.ReadEntries(paths.ListExcludeUser).Count + ", IP " + Util.ReadEntries(paths.IpsetUser).Count);
+
+            o.AppendLine();
+            o.AppendLine("=== КОМПЬЮТЕР ===");
+            o.AppendLine("Файлы zapret: " + (local.MissingFiles.Count == 0 ? "все на месте" : "нет " + string.Join(", ", local.MissingFiles)));
+            o.AppendLine("Служба BFE: " + local.Bfe + ", драйвер WinDivert: " + local.Driver);
+            o.AppendLine("Антивирус: " + (local.Antivirus.Count > 0 ? string.Join(", ", local.Antivirus) : "не определён"));
+            o.AppendLine("Службы, которые могут мешать: " + (local.Conflicts.Count > 0 ? string.Join(", ", local.Conflicts) : "не найдены"));
+            o.AppendLine("Метки времени TCP: " + local.Timestamps);
+            o.AppendLine("С последней загрузки: " + (int)TimeSpan.FromMilliseconds((uint)Environment.TickCount).TotalHours + " ч");
 
             o.AppendLine();
             o.AppendLine("=== САЙТЫ ===");
             foreach (var r in sites)
-                o.AppendLine(r.Url + ": " + r.Text);
+                o.AppendLine(r.Url + ": " + r.Details);
+            o.AppendLine("Обычные сайты для сравнения:");
+            foreach (var r in control)
+                o.AppendLine(r.Url + ": " + r.Details);
 
             // Только количество: сами сайты - личное
             if (userSites.Count > 0)
-                o.AppendLine("Мои сайты: открылось " + SiteCheck.RunAll(userSites, 8).Count(r => r.Opened) + " из " + userSites.Count);
+            {
+                var mine = SiteCheck.RunAll(userSites, 8);
+                o.AppendLine("Мои сайты: открылось " + mine.Count(r => r.Opened) + " из " + userSites.Count);
+                foreach (var g in mine.Where(r => !r.Opened).GroupBy(r => r.Status == SiteStatus.NoConnect ? r.Stage : "адрес не нашёл никто"))
+                    o.AppendLine("- " + (g.Key.Length > 0 ? g.Key : "не открылся") + ": " + g.Count());
+            }
 
             o.AppendLine();
             o.AppendLine("=== ОБЫЧНЫЙ DNS ===");
@@ -235,7 +382,9 @@ namespace ZapretTray
                 {
                     if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
                     var dns = ni.GetIPProperties().DnsAddresses.Select(a => a.ToString());
-                    o.AppendLine("- " + ni.Name + " (" + ni.NetworkInterfaceType + ", " + ni.Description + (Util.LooksLikeVpn(ni) ? ", похоже на VPN" : "") + "): DNS " + string.Join(", ", dns));
+                    // Есть ли IPv6 важно: через него сайт может идти мимо правил. Сам адрес не пишем
+                    bool ipv6 = ni.GetIPProperties().UnicastAddresses.Any(a => a.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 && !a.Address.IsIPv6LinkLocal);
+                    o.AppendLine("- " + ni.Name + " (" + ni.NetworkInterfaceType + ", " + ni.Description + (Util.LooksLikeVpn(ni) ? ", похоже на VPN" : "") + ", IPv6 " + (ipv6 ? "есть" : "нет") + "): DNS " + string.Join(", ", dns));
                 }
             }
             catch (Exception ex) { o.AppendLine(ex.Message); }

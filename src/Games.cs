@@ -14,6 +14,7 @@ namespace ZapretTray
         public string Exe;      // имя процесса без .exe
         public bool Enabled;
         public HashSet<string> Subnets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        public volatile string LastServer;     // последний сервер, с которым соединялась игра. Только в памяти: для пинга
     }
 
     // tray-games.txt: строки "имя|1"; адреса - lists\games\<имя>.txt

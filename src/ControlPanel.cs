@@ -29,6 +29,7 @@ namespace ZapretTray
 
         readonly InfoItem status, health, stats;
         readonly Func<Color> statusColor;
+        readonly Func<string> pings;
         readonly ToolStripMenuItem[] sections;
         readonly ToolStripMenuItem toggle, exit;
         readonly ToolStripMenuItem[] shortcuts;
@@ -37,7 +38,7 @@ namespace ZapretTray
         Point mouse;
 
         readonly Font titleFont = new Font("Segoe UI Semibold", 13f);
-        readonly Font heroFont = new Font("Segoe UI Semibold", 16f);
+        readonly Font heroFont = HeroFont();
         readonly Font valueFont = new Font("Segoe UI Semibold", 11f);
         readonly Font numberFont = new Font("Segoe UI Semibold", 20f);
         readonly Font cardFont = new Font("Segoe UI Semibold", 10f);
@@ -51,7 +52,7 @@ namespace ZapretTray
 
         static Palette P { get { return Theme.Current; } }
 
-        public ControlPanel(InfoItem status, InfoItem health, InfoItem stats, Func<Color> statusColor,
+        public ControlPanel(InfoItem status, InfoItem health, InfoItem stats, Func<Color> statusColor, Func<string> pings,
             ToolStripMenuItem[] sections, ToolStripMenuItem[] shortcuts, ToolStripMenuItem toggle, ToolStripMenuItem exit, Action refresh,
             Dictionary<ToolStripMenuItem, IPanelView> views)
         {
@@ -59,6 +60,7 @@ namespace ZapretTray
             this.health = health;
             this.stats = stats;
             this.statusColor = statusColor;
+            this.pings = pings;
             this.sections = sections;
             this.shortcuts = shortcuts;
             this.toggle = toggle;
@@ -67,8 +69,10 @@ namespace ZapretTray
             this.views = views;
 
             FormBorderStyle = FormBorderStyle.None;
-            ShowInTaskbar = false;
-            TopMost = true;
+            // Обычное окно: остаётся открытым при переключении в игру, сворачивается на панель задач
+            ShowInTaskbar = true;
+            Text = AppInfo.Name;
+            Icon = Theme.AppIcon();
             StartPosition = FormStartPosition.Manual;
             DoubleBuffered = true;
             KeyPreview = true;
@@ -81,8 +85,6 @@ namespace ZapretTray
                 if (e.KeyCode != Keys.Escape) return;
                 if (path.Count > 1) Back(); else Close();
             };
-            // Закрываем после текущего сообщения: окно могло потерять фокус прямо посреди нажатия
-            Deactivate += (s, e) => BeginInvoke((Action)(() => { if (!IsDisposed) Close(); }));
         }
 
         [DllImport("user32.dll")]
@@ -93,6 +95,59 @@ namespace ZapretTray
 
         [DllImport("user32.dll")]
         static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        // Свернули любым способом, хоть кликом по панели задач: окно прячется к значку у часов
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            if (WindowState != FormWindowState.Minimized) return;
+            Hide();
+            WindowState = FormWindowState.Normal;
+        }
+
+        // Без этого стиля окно без рамки не сворачивается кликом по панели задач
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var cp = base.CreateParams;
+                cp.Style |= 0x20000;   // WS_MINIMIZEBOX
+                return cp;
+            }
+        }
+
+        // Повторная правая кнопка на значке: показать уже открытое окно
+        public void Restore()
+        {
+            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            if (!Visible)
+            {
+                Show();
+                Theme.RoundCorners(this);
+            }
+            SetForegroundWindow(Handle);
+            Activate();
+        }
+
+        Rectangle CloseButton { get { return new Rectangle(ClientSize.Width - 42, 6, 36, 28); } }
+        Rectangle MinimizeButton { get { return new Rectangle(ClientSize.Width - 80, 6, 36, 28); } }
+
+        void DrawWindowButtons(Graphics g)
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            bool overClose = Equals(hover, "close"), overMin = Equals(hover, "min");
+            if (overMin) Box(g, MinimizeButton, P.Hover, 7);
+            if (overClose) Box(g, CloseButton, Theme.Bad, 7);
+            int cy = CloseButton.Top + CloseButton.Height / 2;
+            using (var p = new Pen(overMin ? P.Text : P.SubText, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                g.DrawLine(p, MinimizeButton.Left + 12, cy, MinimizeButton.Right - 12, cy);
+            using (var p = new Pen(overClose ? Color.White : P.SubText, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                int cx = CloseButton.Left + CloseButton.Width / 2;
+                g.DrawLine(p, cx - 5, cy - 5, cx + 5, cy + 5);
+                g.DrawLine(p, cx + 5, cy - 5, cx - 5, cy + 5);
+            }
+        }
 
         // Куда пользователь перетащил окно. Живёт, пока программа запущена
         static Point? lastPosition;
@@ -175,6 +230,9 @@ namespace ZapretTray
 
         object HitTest(Point p)
         {
+            if (CloseButton.Contains(p)) return "close";
+            if (MinimizeButton.Contains(p)) return "min";
+            if (path.Count == 0 && health.Available && gameHelp.Contains(p)) return "help";
             if (homeTab.Contains(p)) return homeTab;
             if (ToggleTab.Contains(p)) return toggle;
             if (ExitTab.Contains(p)) return exit;
@@ -229,6 +287,9 @@ namespace ZapretTray
             var hit = HitTest(e.Location);
             if (hit == null) return;
             if (hit is Rectangle) OpenSection(null);
+            else if (hit as string == "close") { Close(); return; }
+            else if (hit as string == "min") Hide();
+            else if (hit as string == "help") { }
             else if (hit as string == "back") Back();
             else if (hit as string == "view") { if (CurrentView.Click(e.Location)) scroll = 0; }
             else Press((ToolStripMenuItem)hit);
@@ -271,6 +332,118 @@ namespace ZapretTray
 
         const TextFormatFlags Line = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine;
 
+        // Цифры крупным техничным шрифтом. Его нет на старых Windows - тогда обычный
+        static Font HeroFont()
+        {
+            var font = new Font("Bahnschrift", 16f, FontStyle.Bold);
+            return font.Name == "Bahnschrift" ? font : new Font("Segoe UI Semibold", 16f);
+        }
+
+        public static Color Mix(Color a, Color b, float part)
+        {
+            return Color.FromArgb(a.A, (int)(a.R + (b.R - a.R) * part), (int)(a.G + (b.G - a.G) * part), (int)(a.B + (b.B - a.B) * part));
+        }
+
+        static Bitmap backdrop;
+        static Palette backdropTheme;
+
+        // Фон окна: тёмный, с едва заметным свечением в углу. Рисуем один раз, шапка берёт отсюда же свой кусок
+        Bitmap Backdrop()
+        {
+            if (backdrop != null && backdropTheme == P && backdrop.Size == ClientSize) return backdrop;
+            if (backdrop != null) backdrop.Dispose();
+            backdrop = new Bitmap(ClientSize.Width, ClientSize.Height);
+            backdropTheme = P;
+            using (var g = Graphics.FromImage(backdrop))
+            {
+                g.Clear(P.Back);
+                Glow(g, new Rectangle(ClientSize.Width - 360, -300, 720, 600), P.Check, 42);
+                Glow(g, new Rectangle(SideWidth - 240, ClientSize.Height - 220, 560, 440), P.Accent2, 24);
+            }
+            return backdrop;
+        }
+
+        // Мягкое свечение: ярче в центре, к краям сходит на нет
+        public static void Glow(Graphics g, Rectangle r, Color color, int alpha)
+        {
+            using (var path = new GraphicsPath())
+            {
+                path.AddEllipse(r);
+                using (var b = new PathGradientBrush(path))
+                {
+                    b.CenterColor = Color.FromArgb((int)(alpha * P.Shine), color);
+                    b.SurroundColors = new[] { Color.FromArgb(0, color) };
+                    g.FillPath(b, path);
+                }
+            }
+        }
+
+        // Активная кнопка: перелив из основного цвета в синий
+        public static void Accent(Graphics g, Rectangle r, int radius)
+        {
+            var area = r;
+            area.Inflate(1, 1);
+            using (var path = ThemedRenderer.RoundRect(r, radius))
+            using (var b = new LinearGradientBrush(area, P.Check, P.Accent2, 0f)) g.FillPath(b, path);
+        }
+
+        // Цветной значок со свечением. Линейная иконка растёт вместе с квадратом
+        public static void Badge(Graphics g, Rectangle r, Color color, string icon, bool enabled = true)
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            if (enabled)
+            {
+                var halo = r;
+                halo.Inflate(r.Width / 2, r.Height / 2);
+                Glow(g, halo, color, 60);
+            }
+            var area = r;
+            area.Inflate(1, 1);
+            int radius = r.Width / 4;
+            using (var path = ThemedRenderer.RoundRect(r, radius))
+            {
+                if (enabled)
+                    using (var b = new LinearGradientBrush(area, Mix(color, Color.White, 0.2f * P.Shine), Mix(color, Color.Black, 0.14f), 55f)) g.FillPath(b, path);
+                else
+                    using (var b = new SolidBrush(P.Tile)) g.FillPath(b, path);
+            }
+            var state = g.Save();
+            float scale = Math.Max(1f, r.Width / 30f);
+            g.TranslateTransform(r.Left + r.Width / 2f, r.Top + r.Height / 2f);
+            g.ScaleTransform(scale, scale);
+            ThemedRenderer.DrawIcon(g, icon, -8, 0, enabled ? Color.White : P.Disabled);
+            g.Restore(state);
+        }
+
+        // Картинка игры со сглаженными углами. Выключенная игра приглушена
+        public static void GamePicture(Graphics g, Image image, Rectangle r, int radius, bool dim = false)
+        {
+            var state = g.Save();
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            using (var path = ThemedRenderer.RoundRect(r, radius))
+            using (var b = new TextureBrush(image, WrapMode.Clamp))
+            {
+                b.TranslateTransform(r.Left, r.Top);
+                b.ScaleTransform((float)r.Width / image.Width, (float)r.Height / image.Height);
+                g.FillPath(b, path);
+                if (dim)
+                    using (var shade = new SolidBrush(Color.FromArgb(165, P.Card))) g.FillPath(shade, path);
+            }
+            g.Restore(state);
+        }
+
+        // Заголовок страницы: светящаяся чёрточка слева и текст
+        public static void PageTitle(Graphics g, string text, Font font, int x, int y, int height, int width)
+        {
+            var bar = new Rectangle(x, y + (height - 18) / 2, 4, 18);
+            var area = bar;
+            area.Inflate(0, 1);
+            using (var path = ThemedRenderer.RoundRect(bar, 2))
+            using (var b = new LinearGradientBrush(area, P.Check, P.Accent2, 90f)) g.FillPath(b, path);
+            TextRenderer.DrawText(g, text, font, new Rectangle(x + 12, y, width - 12, height), P.Text, Line);
+        }
+
         public static void Box(Graphics g, Rectangle r, Color color, int radius)
         {
             using (var path = ThemedRenderer.RoundRect(r, radius))
@@ -280,10 +453,15 @@ namespace ZapretTray
         // Карточка: заливка и тонкая рамка
         public static void Card(Graphics g, Rectangle r, Color fill, int radius, Color? border = null)
         {
+            // Сверху чуть светлее, как стекло. Запас в один пиксель: иначе перелив заворачивается на краях
+            var area = r;
+            area.Inflate(1, 1);
+            var edge = border ?? P.Separator;
             using (var path = ThemedRenderer.RoundRect(r, radius))
             {
-                using (var b = new SolidBrush(fill)) g.FillPath(b, path);
-                using (var p = new Pen(border ?? P.Separator)) g.DrawPath(p, path);
+                using (var b = new LinearGradientBrush(area, Mix(fill, Color.White, 0.05f * P.Shine), fill, 90f)) g.FillPath(b, path);
+                using (var line = new LinearGradientBrush(area, Mix(edge, Color.White, 0.14f * P.Shine), edge, 90f))
+                using (var p = new Pen(line)) g.DrawPath(p, path);
             }
         }
 
@@ -314,18 +492,21 @@ namespace ZapretTray
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.Clear(P.Back);   // тема могла смениться, пока окно открыто
+            g.DrawImageUnscaled(Backdrop(), 0, 0);   // тема могла смениться, пока окно открыто
             DrawSidebar(g);
             if (path.Count == 0) DrawHome(g);
             else if (CurrentView != null) DrawView(g);
             else DrawSection(g);
+            DrawWindowButtons(g);
             using (var p = new Pen(P.Border)) g.DrawRectangle(p, 0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
         }
 
         void DrawSidebar(Graphics g)
         {
-            using (var b = new SolidBrush(P.Card)) g.FillRectangle(b, 0, 0, SideWidth, ClientSize.Height);
+            using (var b = new SolidBrush(Mix(P.Back, P.Card, 0.6f))) g.FillRectangle(b, 0, 0, SideWidth, ClientSize.Height);
+            using (var p = new Pen(P.Separator)) g.DrawLine(p, SideWidth - 1, 0, SideWidth - 1, ClientSize.Height);
             // Логотип
+            Glow(g, new Rectangle(4, 4, 56, 56), Theme.On, 80);
             Box(g, new Rectangle(16, 16, 32, 32), Theme.On, 16);
             TextRenderer.DrawText(g, "Z", valueFont, new Rectangle(16, 16, 32, 32), Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
             TextRenderer.DrawText(g, AppInfo.Name, MenuKit.Bold, new Rectangle(56, 16, SideWidth - 62, 32), P.Text, Line);
@@ -345,6 +526,7 @@ namespace ZapretTray
 
             // Статус и версия видны всегда
             int y = lineY - 56;
+            Glow(g, new Rectangle(14, y + 2, 21, 21), statusColor(), 90);
             using (var b = new SolidBrush(statusColor())) g.FillEllipse(b, 20, y + 8, 9, 9);
             TextRenderer.DrawText(g, status.Value.Split((char)9)[0], MenuKit.Small, new Rectangle(36, y, SideWidth - 44, 26), P.SubText, Line);
             TextRenderer.DrawText(g, "Версия " + AppInfo.Version, MenuKit.Small, new Rectangle(20, y + 24, SideWidth - 28, 22), P.Disabled, Line);
@@ -352,7 +534,8 @@ namespace ZapretTray
 
         void DrawTab(Graphics g, Rectangle r, string text, string icon, bool active, bool hovered, Color? accent = null)
         {
-            if (active || hovered) Box(g, r, active ? P.Check : P.Hover, 9);
+            if (active) Accent(g, r, 9);
+            else if (hovered) Box(g, r, P.Hover, 9);
             g.SmoothingMode = SmoothingMode.AntiAlias;
             ThemedRenderer.DrawIcon(g, icon, r.Left + 12, r.Top + r.Height / 2, active ? Color.White : accent ?? P.SubText);
             TextRenderer.DrawText(g, text, MenuKit.Bold, new Rectangle(r.Left + 38, r.Top, r.Width - 42, r.Height), active ? Color.White : accent ?? P.Text, Line);
@@ -362,7 +545,8 @@ namespace ZapretTray
         {
             cards.Clear();
             contentHeight = 0;
-            const int actionHeight = 84, top = 20;
+            const int actionHeight = 84, top = HeaderHeight;
+            PageTitle(g, "Главная", titleFont, SideWidth + Pad, 12, 34, CardWidth);
             int x = SideWidth + Pad, w = CardWidth * 2 + Gap;
             int actionsTop = ClientSize.Height - Pad - actionHeight;
             int h = actionsTop - Gap - top;
@@ -370,44 +554,115 @@ namespace ZapretTray
             if (health.Available)
             {
                 // Два ровных ряда плиток прямо на фоне окна, как карточки на других страницах
-                int rest = h - Gap, servicesHeight = rest * 11 / 20;
-                DrawServices(g, x, top, w, servicesHeight);
-                DrawNumbers(g, x, top + servicesHeight + Gap, w, rest - servicesHeight);
+                // Сверху главное: работает ли и как. Ниже - что именно открывается
+                int rest = h - Gap, servicesHeight = rest * 11 / 20, numbersHeight = rest - servicesHeight;
+                DrawNumbers(g, x, top, w, numbersHeight);
+                DrawServices(g, x, top + numbersHeight + Gap, w, servicesHeight);
             }
             else
                 DrawOffStatus(g, x, top, w, h);
 
             AddCard(g, shortcuts[0], new Rectangle(x, actionsTop, CardWidth, actionHeight), 0);
             AddCard(g, shortcuts[1], new Rectangle(x + CardWidth + Gap, actionsTop, CardWidth, actionHeight), 0);
+            if (Equals(hover, "help") && health.Available) DrawGameHelp(g);
+        }
+
+        Rectangle gameHelp;
+        const int TimesHeight = 72;
+        static readonly Font TimeLabel = new Font("Segoe UI", 10.5f), TimeValue = new Font("Segoe UI Semibold", 10.5f);
+
+        // "отклик 183 мс": слева название серым, справа значение
+        void DrawTimeRow(Graphics g, string text, int x, int y, int w)
+        {
+            int space = text.IndexOf((char)32);
+            if (space <= 0) return;
+            var label = char.ToUpper(text[0]) + text.Substring(1, space - 1);
+            var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+            TextRenderer.DrawText(g, label, TimeLabel, new Rectangle(x, y, w, 26), P.SubText, flags | TextFormatFlags.Left);
+            TextRenderer.DrawText(g, text.Substring(space + 1), TimeValue, new Rectangle(x, y, w, 26), P.Text, flags | TextFormatFlags.Right);
+        }
+
+        // Запущенная игра из "Моих игр": имя процесса или null. Плитка показывает её значок и название
+        public Func<string> RunningGame;
+
+        static Image LoadIcon(string name)
+        {
+            try
+            {
+                var stream = typeof(ControlPanel).Assembly.GetManifestResourceStream(name);
+                return stream != null ? Image.FromStream(stream) : null;
+            }
+            catch { return null; }
+        }
+
+        static readonly Image ArcIcon = LoadIcon("arc.png"), WardogsIcon = LoadIcon("wardogs.png");
+
+        // Значок и название по имени процесса. Значка нет - остаётся джойстик
+        static void GameLook(string exe, out Image icon, out string name)
+        {
+            icon = null;
+            name = exe;
+            var key = exe.Replace(" ", "");   // в списке игра называется "ARC Raiders", а процесс без пробела
+            if (key.IndexOf("wardogs", StringComparison.OrdinalIgnoreCase) >= 0) { icon = WardogsIcon; name = "Wardogs"; }
+            else if (key.IndexOf("arcraiders", StringComparison.OrdinalIgnoreCase) >= 0 || key.IndexOf("pioneergame", StringComparison.OrdinalIgnoreCase) >= 0) { icon = ArcIcon; name = "ARC Raiders"; }
+        }
+
+        // Пояснение рисуем последним, поверх плиток
+        void DrawGameHelp(Graphics g)
+        {
+            const string text = "Пинг появится, когда запустишь игру из «Моих игр».";
+            const int padX = 14, padY = 10, textWidth = 230;
+            var flags = TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak;
+            // Размер считаем от текста, поэтому он всегда внутри рамки
+            var size = TextRenderer.MeasureText(g, text, MenuKit.Font, new Size(textWidth, 0), flags);
+            int width = size.Width + padX * 2, height = size.Height + padY * 2;
+            var box = new Rectangle(Math.Max(SideWidth + 8, Math.Min(gameHelp.Right - width, ClientSize.Width - width - 10)), gameHelp.Bottom + 6, width, height);
+            Card(g, box, P.Hover, 10);
+            TextRenderer.DrawText(g, text, MenuKit.Font, new Rectangle(box.Left + padX, box.Top + padY, size.Width, size.Height), P.Text, flags);
         }
 
         static readonly string[] ServiceNames = { "YouTube", "Discord", "Игры", "Мои сайты" };
+        static readonly Color[] ServiceColors = { Color.FromArgb(230, 33, 23), Color.FromArgb(88, 101, 242), Color.FromArgb(240, 136, 30), Color.FromArgb(14, 136, 232) };
+        static readonly Color[] NumberColors = { Color.FromArgb(18, 165, 148), Color.FromArgb(142, 84, 233), Color.FromArgb(222, 70, 128) };
 
         // Плитки: крупный значок и результат сверху, название снизу. Пустая часть - плитки нет, остальные делят ширину поровну
         void DrawServices(Graphics g, int x, int y, int w, int h)
         {
             var parts = health.Value.Split((char)9);
+            var times = pings().Split((char)9);
             // Всегда 4 плитки, чтобы ряды совпадали. Проверять нечего - вместо результата прочерк
             int count = ServiceNames.Length;
             int tile = (w - Gap * (count - 1)) / count, n = 0;
             for (int i = 0; i < count; i++)
             {
                 var part = i < parts.Length ? parts[i] : "";
-                int left = x + (tile + Gap) * n++, mid = left + tile / 2, cy = y + h / 2 - 32;
+                // Игра запущена и подключена: просто галочка, а не счёт встроенных игр
+                if (i == 2 && RunningGame != null && RunningGame() != null) part = "✓";
+                int left = x + (tile + Gap) * n++, mid = left + tile / 2, cy = y + (h - TimesHeight - 96) / 2 + 21;   // значок, название и результат по центру над табличкой
                 Card(g, new Rectangle(left, y, tile, h), P.Card, 10);
 
                 // По центру плитки столбиком: значок, название, результат
                 var state = g.Save();
-                g.TranslateTransform(mid - 27, cy);
-                g.ScaleTransform(3f, 3f);
-                ThemedRenderer.DrawService(g, i, 0, 0);
+                var exe = i == 2 && RunningGame != null ? RunningGame() : null;
+                Image gameIcon = null;
+                string title = ServiceNames[i];
+                if (exe != null) GameLook(exe, out gameIcon, out title);
+                Glow(g, new Rectangle(mid - 54, cy - 48, 108, 96), ServiceColors[i], 60);
+                if (gameIcon != null) GamePicture(g, gameIcon, new Rectangle(mid - 21, cy - 21, 42, 42), 10);   // квадратный значок целиком, не обрезаем
+                else
+                {
+                    g.TranslateTransform(mid - 27, cy);
+                    g.ScaleTransform(3f, 3f);
+                    ThemedRenderer.DrawService(g, i, 0, 0);
+                }
                 g.Restore(state);
 
                 var centered = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine;
-                TextRenderer.DrawText(g, ServiceNames[i], valueFont, new Rectangle(left + 6, cy + 28, tile - 12, 28), P.Text, centered);
+                TextRenderer.DrawText(g, title, valueFont, new Rectangle(left + 6, cy + 28, tile - 12, 28), P.Text, centered);
 
                 int ry = cy + 72;
-                if (part.Length == 0)
+                if (part.Length == 0 && exe != null) { }   // игра запущена, встроенных адресов проверять не нужно: главное - пинг
+                else if (part.Length == 0)
                     TextRenderer.DrawText(g, "—", valueFont, new Rectangle(left + 6, ry - 14, tile - 12, 28), P.Disabled, centered);
                 else if (part.Length > 1)
                 {
@@ -423,6 +678,28 @@ namespace ZapretTray
                     g.ScaleTransform(1.6f, 1.6f);
                     ThemedRenderer.DrawResult(g, part, 0, 0, 12, new Rectangle(0, -8, 12, 16));
                     g.Restore(mark);
+                }
+
+                // Под результатом: у игр пинг до сервера, он важнее и крупнее, у остальных отклик сайта
+                var time = i < times.Length ? times[i] : "";
+                // Табличка внизу плитки: у всех на одном уровне
+                if (time.Length > 0)
+                {
+                    int tableTop = y + h - TimesHeight;
+                    using (var pen = new Pen(P.Separator)) g.DrawLine(pen, left + 16, tableTop, left + tile - 16, tableTop);
+                    var lines = time.Split((char)10);
+                    int rowTop = tableTop + (TimesHeight - lines.Length * 26) / 2;
+                    for (int line = 0; line < lines.Length; line++)
+                        DrawTimeRow(g, lines[line], left + 16, rowTop + line * 26, tile - 32);
+                }
+
+                // Вопросик в углу плитки игр: наведёшь - объяснит, откуда берётся пинг
+                if (i == 2)
+                {
+                    gameHelp = new Rectangle(left + tile - 30, y + 8, 22, 22);
+                    using (var pen = new Pen(Equals(hover, "help") ? P.SubText : P.Disabled, 1.3f)) g.DrawEllipse(pen, gameHelp.Left + 2, gameHelp.Top + 2, 17, 17);
+                    TextRenderer.DrawText(g, "?", MenuKit.Small, gameHelp, Equals(hover, "help") ? P.SubText : P.Disabled,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
                 }
             }
         }
@@ -454,9 +731,39 @@ namespace ZapretTray
             {
                 int left = x + (tile + Gap) * (i + 1);
                 Card(g, new Rectangle(left, y, tile, h), P.Card, 10);
-                TextRenderer.DrawText(g, numbers[i], heroFont, new Rectangle(left + 6, y + h / 2 - 34, tile - 12, 44), P.Text, centered);
-                TextRenderer.DrawText(g, NumberNames[i], MenuKit.Font, new Rectangle(left + 8, y + h / 2 + 10, tile - 16, 24), P.SubText, centered);
+                Glow(g, new Rectangle(left + tile / 2 - 54, y + h / 2 - 88, 108, 96), NumberColors[i], 60);
+                var state = g.Save();
+                g.TranslateTransform(left + tile / 2 - 27, y + h / 2 - 40);
+                g.ScaleTransform(3f, 3f);
+                if (i == 0) ThemedRenderer.DrawSpeedometer(g, SpeedLevel(numbers[i]), 0, 0);
+                else if (i == 1) ThemedRenderer.DrawSignal(g, PingBars(numbers[i]), 0, 0);
+                else ThemedRenderer.DrawStopwatch(g, numbers[i] == "—" ? 0 : DateTime.Now.Second / 60.0, 0, 0);
+                g.Restore(state);
+                TextRenderer.DrawText(g, numbers[i], heroFont, new Rectangle(left + 6, y + h / 2 - 16, tile - 12, 44), P.Text, centered);
+                TextRenderer.DrawText(g, NumberNames[i], MenuKit.Font, new Rectangle(left + 8, y + h / 2 + 26, tile - 16, 24), P.SubText, centered);
             }
+        }
+
+        // Первое число в строке: "↓ 8,4 МБ/с" - 8.4, "32 мс" - 32. Числа нет - минус один
+        static double NumberIn(string text)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(text, @"\d+([.,]\d+)?");
+            return m.Success ? double.Parse(m.Value.Replace(',', '.'), System.Globalization.CultureInfo.InvariantCulture) : -1;
+        }
+
+        // Шкала спидометра логарифмическая: 1 КБ/с в начале, 100 МБ/с в конце, иначе обычный трафик не сдвинет стрелку
+        static double SpeedLevel(string text)
+        {
+            double value = NumberIn(text);
+            if (value <= 0) return 0;
+            double kb = text.Contains("МБ") ? value * 1024 : value;
+            return Math.Max(0, Math.Min(1, Math.Log10(Math.Max(kb, 1)) / 5));
+        }
+
+        static int PingBars(string text)
+        {
+            double ms = NumberIn(text);
+            return ms < 0 ? 0 : ms < 60 ? 4 : ms < 120 ? 3 : ms < 250 ? 2 : 1;
         }
 
         // Выключено: плиток нет, только крупный статус по центру карточки
@@ -488,7 +795,8 @@ namespace ZapretTray
         // Поэтому шапку рисуем после содержимого, поверх него
         void CoverHeader(Graphics g, Rectangle area)
         {
-            using (var b = new SolidBrush(P.Back)) g.FillRectangle(b, SideWidth, 0, ClientSize.Width - SideWidth, area.Top);
+            var top = new Rectangle(SideWidth, 0, ClientSize.Width - SideWidth, area.Top);
+            g.DrawImage(Backdrop(), top, top, GraphicsUnit.Pixel);
         }
 
         void DrawScrollBar(Graphics g, Rectangle area)
@@ -514,7 +822,11 @@ namespace ZapretTray
                     var caption = it.Tag as string;
                     if (caption == null) { y += GroupGap; continue; }
                     if (y > HeaderHeight) y += 6;
-                    TextRenderer.DrawText(g, caption, MenuKit.Small, new Rectangle(SideWidth + Pad + 2, y - scroll, CardWidth, 24), P.SubText, Line);
+                    // Подпись группы заглавными и линия до конца ряда
+                    var upper = caption.ToUpper();
+                    int captionX = SideWidth + Pad + 2, lineX = captionX + TextRenderer.MeasureText(upper, MenuKit.Small).Width + 6;
+                    TextRenderer.DrawText(g, upper, MenuKit.Small, new Rectangle(captionX, y - scroll, CardWidth, 24), P.SubText, Line);
+                    using (var p = new Pen(P.Separator)) g.DrawLine(p, lineX, y - scroll + 12, SideWidth + Pad + CardWidth * 2 + Gap, y - scroll + 12);
                     y += 28;
                     continue;
                 }
@@ -533,7 +845,7 @@ namespace ZapretTray
             int titleX = SideWidth + Pad;
             if (path.Count > 1)
             {
-                Box(g, BackButton, Equals(hover, "back") ? P.Hover : P.Card, 8);
+                Card(g, BackButton, Equals(hover, "back") ? P.Hover : P.Card, 8);
                 using (var p = new Pen(P.Text, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
                 {
                     int cx = BackButton.Left + 13, my = BackButton.Top + 15;
@@ -542,7 +854,7 @@ namespace ZapretTray
                 }
                 titleX += 40;
             }
-            TextRenderer.DrawText(g, section.Text.TrimEnd('.'), titleFont, new Rectangle(titleX, 12, CardWidth * 2 - 40, 34), P.Text, Line);
+            PageTitle(g, section.Text.TrimEnd('.'), titleFont, titleX, 12, 34, CardWidth * 2 - 40);
             DrawScrollBar(g, area);
         }
 
@@ -552,12 +864,20 @@ namespace ZapretTray
             cards.Add(new KeyValuePair<Rectangle, ToolStripMenuItem>(r, item));
             r.Y -= offset;
             bool enabled = item.Enabled;
-            Card(g, r, hover == item && enabled ? P.Hover : P.Card, 10, item.Checked && !IsSwitch(item) ? P.Check : (Color?)null);
+            bool hot = hover == item && enabled, chosen = item.Checked && !IsSwitch(item);
+            Card(g, r, hot ? P.Hover : chosen ? Mix(P.Card, P.Check, 0.14f) : P.Card, 10, chosen || hot ? P.Check : (Color?)null);
 
-            var badge = new Rectangle(r.Left + 12, r.Top + (r.Height - 30) / 2, 30, 30);
-            Box(g, badge, enabled ? BadgeColor(item) : P.Tile, 8);
+            var badge = new Rectangle(r.Left + 11, r.Top + (r.Height - 40) / 2, 40, 40);
+            // У известной игры вместо значка её настоящая картинка
+            Image picture = null;
+            if (Icon_(item) == "games")
+            {
+                string unused;
+                GameLook(item.Text, out picture, out unused);
+            }
+            if (picture != null) GamePicture(g, picture, badge, 10, IsSwitch(item) && !item.Checked);
+            else Badge(g, badge, BadgeColor(item), Icon_(item), enabled);
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            ThemedRenderer.DrawIcon(g, Icon_(item), badge.Left + 7, badge.Top + 15, enabled ? Color.White : P.Disabled);
 
             int right = r.Right - 12;
             if (IsSwitch(item))
@@ -615,7 +935,8 @@ namespace ZapretTray
 
         public static void DrawSwitch(Graphics g, Rectangle r, bool on)
         {
-            Box(g, r, on ? P.Check : P.Tile, r.Height / 2 - 1);
+            if (on) Accent(g, r, r.Height / 2 - 1);
+            else Box(g, r, Mix(P.Tile, P.SubText, 0.35f), r.Height / 2 - 1);   // в светлой теме чистый Tile сливается с белым кружком
             int d = r.Height - 6, x = on ? r.Right - d - 3 : r.Left + 3;
             g.FillEllipse(Brushes.White, x, r.Top + 3, d, d);
         }

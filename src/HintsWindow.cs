@@ -37,7 +37,7 @@ namespace ZapretTray
                 "Мои сайты", "Выключи"),
             new Hint("ping", Teal, "Всё лагает", "Жди, пока Z снова станет зелёным",
                 "Подключение", "Подобрать: минимальный пинг"),
-            new Hint("games", Green, "Лагает игра", "Сервера игры добавятся сами",
+            new Hint("games", Green, "Лагает игра", "Пока игра запущена, на главной виден её пинг",
                 "Мои игры", "Добавить игру", "Запусти игру"),
             new Hint("dns", Purple, "Крестик у YouTube", "Не помогло: там же нажми «Исправить DNS»",
                 "Подключение", "Подобрать: быстро"),
@@ -89,6 +89,7 @@ namespace ZapretTray
         const TextFormatFlags Center = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
 
         readonly Font cardFont = new Font("Segoe UI Semibold", 11f);
+        readonly Font titleFont = new Font("Segoe UI Semibold", 13f);
         readonly List<Rectangle> tabRects = new List<Rectangle>();
         public int Page;
 
@@ -100,12 +101,14 @@ namespace ZapretTray
         public void DrawHeader(Graphics g, Rectangle r, Point mouse)
         {
             tabRects.Clear();
-            int x = r.Left;
+            ControlPanel.PageTitle(g, "Подсказки", titleFont, r.Left, r.Top - 2, 34, 130);
+            int x = r.Left + 140;
             for (int i = 0; i < Tabs.Length; i++)
             {
                 var tab = new Rectangle(x, r.Top, TextRenderer.MeasureText(Tabs[i], MenuKit.Bold).Width + 28, 34);
                 tabRects.Add(tab);
-                ControlPanel.Box(g, tab, i == Page ? P.Check : tab.Contains(mouse) ? P.Hover : P.Card, 9);
+                if (i == Page) ControlPanel.Accent(g, tab, 9);
+                else ControlPanel.Card(g, tab, tab.Contains(mouse) ? P.Hover : P.Card, 9);
                 TextRenderer.DrawText(g, Tabs[i], MenuKit.Bold, tab, i == Page ? Color.White : P.Text, Center);
                 x = tab.Right + 6;
             }
@@ -157,9 +160,7 @@ namespace ZapretTray
             LegendDot(g, x, y + 90, Theme.Busy, "подбирает настройки, подожди");
 
             LegendCard(g, rx, y, "Значки на главной", "Правая кнопка по Z: открыть это окно");
-            ControlPanel.Box(g, new Rectangle(rx + 12, y + 10, 28, 28), P.Check, 8);
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            ThemedRenderer.DrawIcon(g, "list", rx + 18, y + 24, Color.White);
+            ControlPanel.Badge(g, new Rectangle(rx + 11, y + 9, 30, 30), P.Check, "list");
             LegendMark(g, rx, y + 46, "✓", "открывается");
             LegendMark(g, rx, y + 68, "✗", "не открывается");
             LegendMark(g, rx, y + 90, "3/4", "открылись не все");
@@ -189,9 +190,7 @@ namespace ZapretTray
         void DrawCard(Graphics g, Hint h, int x, int y)
         {
             ControlPanel.Card(g, new Rectangle(x, y, CardWidth, CardHeight), P.Card, 10);
-            ControlPanel.Box(g, new Rectangle(x + 12, y + 10, 28, 28), h.Color, 8);
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            ThemedRenderer.DrawIcon(g, h.Icon, x + 18, y + 24, Color.White);
+            ControlPanel.Badge(g, new Rectangle(x + 11, y + 9, 30, 30), h.Color, h.Icon);
             TextRenderer.DrawText(g, h.Title, cardFont, new Rectangle(x + 50, y + 10, CardWidth - 62, 28), P.Text, Line);
 
             // Карточка без кнопок: просто объяснение на две строки
@@ -207,7 +206,8 @@ namespace ZapretTray
             {
                 bool last = i == h.Steps.Length - 1;
                 int w = TextRenderer.MeasureText(h.Steps[i], MenuKit.Small).Width + 12;
-                ControlPanel.Box(g, new Rectangle(px, py, w, 24), last ? P.Check : P.Tile, 7);
+                if (last) ControlPanel.Accent(g, new Rectangle(px, py, w, 24), 7);
+                else ControlPanel.Box(g, new Rectangle(px, py, w, 24), P.Tile, 7);
                 TextRenderer.DrawText(g, h.Steps[i], MenuKit.Small, new Rectangle(px, py, w, 24), last ? Color.White : P.Text, Center);
                 px += w;
                 if (!last)
@@ -226,6 +226,22 @@ namespace ZapretTray
         }
     }
 
+    // Поле ввода со своей серой подсказкой: системную нельзя покрасить, и на тёмном фоне она почти не видна
+    class CueBox : TextBox
+    {
+        public string Cue;
+        public Color CueColor;
+
+        protected override void WndProc(ref Message m)
+        {
+            base.WndProc(ref m);
+            if (m.Msg != 0xF || TextLength > 0 || Cue == null) return;   // WM_PAINT
+            using (var g = CreateGraphics())
+                TextRenderer.DrawText(g, Cue, Font, ClientRectangle, CueColor, BackColor,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+        }
+    }
+
     // Мои сайты: сверху поле ввода, ниже строки с переключателем и крестиком. Включён - обход, выключен - исключение
     class SitesView : IPanelView
     {
@@ -238,7 +254,7 @@ namespace ZapretTray
         readonly Action<Tuple<string, string, bool>, bool> setExclude;
         readonly Action<Tuple<string, string, bool>> remove;
 
-        readonly TextBox box = new TextBox { BorderStyle = BorderStyle.None, Font = MenuKit.Font };
+        readonly CueBox box = new CueBox { BorderStyle = BorderStyle.None, Font = MenuKit.Font, Cue = "Вставь любую ссылку, сайт или IP: https, www и остальное лишнее уберётся само" };
         readonly List<KeyValuePair<Rectangle, Action>> hots = new List<KeyValuePair<Rectangle, Action>>();
         Rectangle addButton;
         List<Tuple<string, string, bool>> entries;
@@ -257,8 +273,8 @@ namespace ZapretTray
             this.add = add;
             this.setExclude = setExclude;
             this.remove = remove;
-            // Серая подсказка в пустом поле
-            box.HandleCreated += (s, e) => SendMessage(box.Handle, 0x1501, (IntPtr)1, "Впиши сайт или IP: youtube.com или 1.2.3.4");
+            box.Enter += (s, e) => { if (host != null) host.Invalidate(); };
+            box.Leave += (s, e) => { if (host != null) host.Invalidate(); };
             box.KeyDown += (s, e) =>
             {
                 if (e.KeyCode != Keys.Enter) return;
@@ -266,9 +282,6 @@ namespace ZapretTray
                 Add();
             };
         }
-
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, string lParam);
 
         public int Extra { get { return 50; } }
 
@@ -306,22 +319,29 @@ namespace ZapretTray
 
         public void DrawHeader(Graphics g, Rectangle r, Point mouse)
         {
-            TextRenderer.DrawText(g, "Мои сайты", TitleFont, new Rectangle(r.Left, r.Top - 2, 120, 34), P.Text, Line);
+            ControlPanel.PageTitle(g, "Мои сайты", TitleFont, r.Left, r.Top - 2, 34, 120);
             if (entries != null && entries.Count > 0)
             {
-                var count = new Rectangle(r.Left + 112, r.Top + 3, 32, 24);
+                var count = new Rectangle(r.Left + 124, r.Top + 3, 32, 24);
                 ControlPanel.Box(g, count, P.Tile, 8);
                 TextRenderer.DrawText(g, entries.Count.ToString(), MenuKit.Small, count, P.SubText, Center);
             }
 
             var field = new Rectangle(r.Left, r.Top + 44, ContentWidth - 130, 36);
-            ControlPanel.Box(g, field, P.Tile, 9);
-            box.BackColor = P.Tile;
+            // Заливка ровная, без перелива: иначе прямоугольник самого поля ввода заметен на фоне
+            var fill = ControlPanel.Mix(P.Back, P.Card, 0.5f);
+            ControlPanel.Box(g, field, fill, 9);
+            using (var path = ThemedRenderer.RoundRect(field, 9))
+            using (var pen = new Pen(box.Focused ? P.Check : P.Separator)) g.DrawPath(pen, path);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            ThemedRenderer.DrawIcon(g, "sites", field.Left + 12, field.Top + 18, P.SubText);
+            box.BackColor = fill;
             box.ForeColor = P.Text;
-            box.SetBounds(field.Left + 12, field.Top + 9, field.Width - 24, 20);
+            box.CueColor = P.SubText;
+            box.SetBounds(field.Left + 38, field.Top + 9, field.Width - 50, 18);
 
             addButton = new Rectangle(field.Right + 10, field.Top, 120, 36);
-            ControlPanel.Box(g, addButton, P.Check, 9);
+            ControlPanel.Accent(g, addButton, 9);
             TextRenderer.DrawText(g, "Добавить", MenuKit.Bold, addButton, Color.White, Center);
         }
 
@@ -344,11 +364,9 @@ namespace ZapretTray
                 var entry = e;
                 var row = new Rectangle(x, y, ContentWidth, RowHeight);
                 ControlPanel.Card(g, row, P.Card, 10);
-                var badge = new Rectangle(x + 12, y + 12, 30, 30);
+                var badge = new Rectangle(x + 11, y + 10, 34, 34);
                 bool isIp = entry.Item2.IndexOf("ipset", StringComparison.OrdinalIgnoreCase) >= 0;
-                ControlPanel.Box(g, badge, entry.Item3 ? Color.FromArgb(230, 126, 34) : Color.FromArgb(14, 136, 232), 8);
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                ThemedRenderer.DrawIcon(g, isIp ? "dns" : "sites", badge.Left + 7, badge.Top + 15, Color.White);
+                ControlPanel.Badge(g, badge, entry.Item3 ? Color.FromArgb(230, 126, 34) : Color.FromArgb(14, 136, 232), isIp ? "dns" : "sites");
                 TextRenderer.DrawText(g, entry.Item1, MenuKit.Bold, new Rectangle(x + 54, y, ContentWidth - 250, RowHeight), P.Text, Line);
 
                 var del = new Rectangle(row.Right - 44, y + 11, 32, 32);

@@ -17,7 +17,7 @@ namespace ZapretTray
     static class AppInfo
     {
         public const string Name = "Zapret Tray";
-        public const string Version = "0.4";
+        public const string Version = "0.5";
         public const string RunTask = "ZapretTray";
         public const string AutoTask = "ZapretTray Autostart";
         public const string TrayExe = "ZapretTray.exe";
@@ -165,34 +165,46 @@ namespace ZapretTray
             return removed > 0;
         }
 
-        // Разбор того, что ввёл пользователь: домен, IP или подсеть
+        // Разбор того, что ввёл пользователь: домен, IP или подсеть. Можно вставить ссылку как есть, останется только сайт.
+        // Поддомены, кроме www, не срезаем: иначе обход или исключение заденет весь сайт, а не то, что просили
         public static bool ParseEntry(string text, out string value, out bool isIp)
         {
             value = null;
             isIp = false;
             if (text == null) return false;
             var s = text.Trim().ToLowerInvariant();
-            s = Regex.Replace(s, @"^[a-z]+://", "");
+            if (s.StartsWith("#")) return false;   // комментарий из файла, даже если в нём упомянут сайт
+            // Вставили с текстом вокруг: берём первое слово с точкой
+            var words = s.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length > 1) s = words.FirstOrDefault(w => w.Contains('.')) ?? s;
+            s = s.Trim('"', '\'', '`', '<', '>', '(', ')', '[', ']', '{', '}', ',', ';', '!', '|', '«', '»').Replace('\\', '/');
+            s = Regex.Replace(s, @"^([a-z]+:/*|//)", "");
+            int tailAt = s.IndexOfAny(new[] { '?', '#' });
+            if (tailAt >= 0) s = s.Substring(0, tailAt);
             int slash = s.IndexOf('/');
             // "1.2.3.0/24" - подсеть, "site.com/path" - отрезаем путь
             if (slash >= 0)
             {
                 var head = s.Substring(0, slash);
-                var tail = s.Substring(slash + 1);
+                var tail = s.Substring(slash + 1).TrimEnd('/');
                 int bits;
                 IPAddress ipNet;
                 if (IPAddress.TryParse(head, out ipNet) && ipNet.AddressFamily == AddressFamily.InterNetwork
-                    && int.TryParse(tail, out bits) && bits >= 8 && bits <= 32)
+                    && int.TryParse(tail, out bits))
                 {
+                    if (bits < 8 || bits > 32) return false;   // такая подсеть слишком широкая, молча брать один адрес нельзя
                     value = head + "/" + bits;
                     isIp = true;
                     return true;
                 }
                 s = head;
             }
+            s = s.Substring(s.LastIndexOf('@') + 1);   // логин в ссылке: user@site.com
             s = s.TrimStart('*', '.');
             int colon = s.LastIndexOf(':');
             if (colon > 0 && s.IndexOf(':') == colon) s = s.Substring(0, colon);
+            s = s.TrimEnd('.');
+            if (s.StartsWith("www.") && s.IndexOf('.', 4) > 0) s = s.Substring(4);
 
             IPAddress ip;
             if (IPAddress.TryParse(s, out ip) && ip.AddressFamily == AddressFamily.InterNetwork && s.Count(c => c == '.') == 3)
