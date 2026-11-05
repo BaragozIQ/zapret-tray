@@ -597,6 +597,172 @@ namespace ZapretTray
         }
     }
 
+    // Раздел "Обязательные проверки": список сайтов, под которые подбирается конфиг. Переключатель "обязательная/нет"
+    class ChecksView : IPanelView
+    {
+        const int RowHeight = 54, Gap = 8, ContentWidth = ControlPanel.CardWidth * 2 + 12;
+        static readonly Font TitleFont = new Font("Segoe UI Semibold", 13f);
+
+        readonly Func<List<Check>> list;
+        readonly Action<string> add;
+        readonly Action<Check, bool> setRequired;
+        readonly Action<Check> remove;
+
+        readonly CueBox box = new CueBox { BorderStyle = BorderStyle.None, Font = MenuKit.Font, Cue = "Добавить сайт для проверки: youtube.com, discord.com, свой сайт..." };
+        readonly List<KeyValuePair<Rectangle, Action>> hots = new List<KeyValuePair<Rectangle, Action>>();
+        Rectangle addButton;
+        List<Check> entries;
+        string error;
+        Control host;
+
+        static Palette P { get { return Theme.Current; } }
+
+        const TextFormatFlags Line = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine;
+        const TextFormatFlags Center = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+
+        public ChecksView(Func<List<Check>> list, Action<string> add, Action<Check, bool> setRequired, Action<Check> remove)
+        {
+            this.list = list;
+            this.add = add;
+            this.setRequired = setRequired;
+            this.remove = remove;
+            box.Enter += (s, e) => { if (host != null) host.Invalidate(); };
+            box.Leave += (s, e) => { if (host != null) host.Invalidate(); };
+            box.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; Add(); } };
+        }
+
+        public int Extra { get { return 50; } }
+
+        public void Activate(Control host, bool on)
+        {
+            this.host = host;
+            if (on)
+            {
+                entries = list();
+                error = null;
+                if (box.Parent == null) host.Controls.Add(box);
+                box.Show();
+                box.Focus();
+            }
+            else box.Hide();
+        }
+
+        void Add()
+        {
+            if (CheckStore.Normalize(box.Text) == null)
+            {
+                error = "Не понял, что это. Впиши сайт, например youtube.com.";
+                if (host != null) host.Invalidate();
+                return;
+            }
+            error = null;
+            add(box.Text);
+            box.Clear();
+            box.Focus();
+            entries = list();
+            if (host != null) host.Invalidate();
+        }
+
+        public void DrawHeader(Graphics g, Rectangle r, Point mouse)
+        {
+            ControlPanel.PageTitle(g, "Обязательные проверки", TitleFont, r.Left, r.Top - 2, 34, 300);
+            if (entries != null && entries.Count > 0)
+            {
+                var count = new Rectangle(r.Left + 304, r.Top + 3, 34, 24);
+                ControlPanel.Box(g, count, P.Tile, 8);
+                TextRenderer.DrawText(g, System.Linq.Enumerable.Count(entries, c => c.Required) + "/" + entries.Count, MenuKit.Small, count, P.SubText, Center);
+            }
+
+            var field = new Rectangle(r.Left, r.Top + 44, ContentWidth - 130, 36);
+            var fill = ControlPanel.Mix(P.Back, P.Card, 0.5f);
+            ControlPanel.Box(g, field, fill, 9);
+            using (var path = ThemedRenderer.RoundRect(field, 9))
+            using (var pen = new Pen(box.Focused ? P.Check : P.Separator)) g.DrawPath(pen, path);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            ThemedRenderer.DrawIcon(g, "ping", field.Left + 12, field.Top + 18, P.SubText);
+            box.BackColor = fill;
+            box.ForeColor = P.Text;
+            box.CueColor = P.SubText;
+            var panel = host as ControlPanel;
+            var place = new Rectangle(field.Left + 38, field.Top + 9, field.Width - 50, 18);
+            if (panel != null)
+            {
+                place = panel.ToDevice(place);
+                box.Font = TextRenderer.Scaled(MenuKit.Font, panel.FontScale);
+            }
+            box.SetBounds(place.X, place.Y, place.Width, place.Height);
+
+            addButton = new Rectangle(field.Right + 10, field.Top, 120, 36);
+            ControlPanel.Accent(g, addButton, 9);
+            TextRenderer.DrawText(g, "Добавить", MenuKit.Bold, addButton, Color.White, Center);
+        }
+
+        public int Draw(Graphics g, int x, int top, Point mouse)
+        {
+            hots.Clear();
+            int y = top;
+            bool failed = error != null;
+            TextRenderer.DrawText(g, failed ? error : "Обязательные: под них программа подбирает конфиг. Необязательные просто проверяются для сведения.", MenuKit.Small,
+                new Rectangle(x, y, ContentWidth, 22), failed ? Theme.Bad : P.SubText, Line);
+            y += 30;
+
+            if (entries == null || entries.Count == 0)
+            {
+                TextRenderer.DrawText(g, "Пока пусто. Впиши сайт сверху и нажми «Добавить».", MenuKit.Font, new Rectangle(x, y, ContentWidth, 30), P.Disabled, Line);
+                return y - top + 30;
+            }
+            foreach (var e in entries)
+            {
+                var entry = e;
+                var row = new Rectangle(x, y, ContentWidth, RowHeight);
+                ControlPanel.Card(g, row, P.Card, 10);
+                var badge = new Rectangle(x + 11, y + 10, 34, 34);
+                ControlPanel.Badge(g, badge, entry.Required ? Color.FromArgb(32, 170, 92) : Color.FromArgb(96, 110, 135), "ping");
+                TextRenderer.DrawText(g, entry.Url.Replace("https://", ""), MenuKit.Bold, new Rectangle(x + 54, y, ContentWidth - 270, RowHeight), P.Text, Line);
+
+                var del = new Rectangle(row.Right - 44, y + 11, 32, 32);
+                var toggle = new Rectangle(del.Left - 52, y + 16, 40, 22);
+                bool on = entry.Required;
+                TextRenderer.DrawText(g, on ? "Обязательно" : "Не обязательно", MenuKit.Small, new Rectangle(toggle.Left - 112, y, 104, RowHeight), on ? P.Text : P.SubText,
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+                ControlPanel.DrawSwitch(g, toggle, on);
+
+                if (del.Contains(mouse)) ControlPanel.Box(g, del, Theme.Bad, 8);
+                using (var p = new Pen(del.Contains(mouse) ? Color.White : P.SubText, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                {
+                    g.DrawLine(p, del.Left + 11, del.Top + 11, del.Right - 11, del.Bottom - 11);
+                    g.DrawLine(p, del.Right - 11, del.Top + 11, del.Left + 11, del.Bottom - 11);
+                }
+
+                hots.Add(new KeyValuePair<Rectangle, Action>(toggle, () => setRequired(entry, !on)));
+                hots.Add(new KeyValuePair<Rectangle, Action>(del, () => remove(entry)));
+                y += RowHeight + Gap;
+            }
+            return y - top;
+        }
+
+        public bool HeaderHot(Point p) { return addButton.Contains(p); }
+
+        public bool Hot(Point p)
+        {
+            foreach (var h in hots) if (h.Key.Contains(p)) return true;
+            return false;
+        }
+
+        public bool Click(Point p)
+        {
+            if (addButton.Contains(p)) { Add(); return false; }
+            foreach (var h in hots)
+            {
+                if (!h.Key.Contains(p)) continue;
+                h.Value();
+                entries = list();
+                break;
+            }
+            return false;
+        }
+    }
+
     // Окно "Отправить баг" в стиле главного окна: без рамки Windows, своё поле и кнопки
     class BugDialog : Form
     {
@@ -759,6 +925,9 @@ namespace ZapretTray
 
         static readonly Dictionary<string, Item[]> Notes = new Dictionary<string, Item[]>
         {
+            { "0.9", new[] {
+                new Item("ping", Color.FromArgb(32, 170, 92), "Обязательные проверки", "Новый раздел: выбери, под какие сайты подбирать конфиг"),
+                new Item("fast", Color.FromArgb(14, 136, 232), "Подбор стал быстрее", "Останавливается на первом рабочем, а не гоняет все") } },
             { "0.8", new[] {
                 new Item("games", Color.FromArgb(230, 126, 34), "Мои приложения", "Бывшие «Мои игры»: теперь не только игры"),
                 new Item("plus", Color.FromArgb(46, 160, 67), "Добавить из установленных", "Список твоих программ со значками, или выбери файл"),

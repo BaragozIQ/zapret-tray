@@ -66,7 +66,8 @@ namespace ZapretTray
 
         InfoItem statusItem, healthItem, statsItem;
         ToolStripMenuItem toggleItem, repairItem, fastItem, bestItem, manualItem;
-        ToolStripMenuItem scaleItem, bugItem, sitesItem, reportItem, settingsItem, themeItem, autoupdateItem, notifyItem, updateItem, updateNowItem, dnsFixItem, dnsUndoItem;
+        ToolStripMenuItem scaleItem, bugItem, sitesItem, checksItem, reportItem, settingsItem, themeItem, autoupdateItem, notifyItem, updateItem, updateNowItem, dnsFixItem, dnsUndoItem;
+        CheckStore checks;
         bool dnsBusy, dnsAutoTried, watchVpnLogged;
 
         // Значки в меню: результат последней проверки, null - проверки ещё не было
@@ -140,6 +141,7 @@ namespace ZapretTray
             Application.ThreadException += (s, e) => OnCrash(e.Exception);
             LoadHistory();
             games = new GameStore(paths);
+            checks = new CheckStore(paths);
             ControlPanel.LoadAppPics(paths.IconsDir);
             BugReport.MachineId(settings);   // номер компьютера появляется при первом запуске
 
@@ -260,6 +262,7 @@ namespace ZapretTray
             bestItem = MenuKit.Icon(Item("Подобрать конфиг с лучшим пингом", (s, e) => UserSelect("best")), "ping", "Проверит все и выберет быстрый, это дольше");
             manualItem = MenuKit.Icon(Item("Выбрать конфиг вручную", null), "list", "Если знаешь, какой нужен");
             sitesItem = MenuKit.Icon(Item("Мои сайты...", (s, e) => OpenSites()), "sites");
+            checksItem = MenuKit.Icon(Item("Проверки", null), "ping");
             reportItem = MenuKit.Icon(Item("Что-то не работает", (s, e) => MakeReport()), "report", "Скопирует отчёт, вставь его в чат");
             dnsFixItem = MenuKit.Icon(Item("Исправить DNS", (s, e) => ApplyDnsFix()), "dns", "Если YouTube не находится");
             dnsUndoItem = MenuKit.Icon(Item("Вернуть DNS как было", (s, e) => UndoDnsFix()), "undo", "Настройки DNS станут как раньше");
@@ -311,7 +314,9 @@ namespace ZapretTray
             updateNowItem = MenuKit.Icon(Item("Обновить", (s, e) => { if (appUpdate != null) InstallAppUpdate(appUpdate, true); }), "load", "Скачает и поставит новую версию, zapret перезапустится сам");
             settingsItem.DropDownItems.AddRange(new ToolStripItem[] {
                 // Все карточки парами, чтобы в рядах не было дыр
-                MenuKit.Sep("Вид"), themeItem, scaleItem, MenuKit.Sep("Работа"), behaviorItem, updateItem, MenuKit.Sep("Перенос настроек"),
+                MenuKit.Sep("Вид"), themeItem, scaleItem, MenuKit.Sep("Работа"), behaviorItem, updateItem,
+                MenuKit.Icon(Item("Обязательные проверки", (s, e) => { if (panel != null) panel.OpenByName("Проверки"); }), "ping", "Под какие сайты подбирать конфиг"),
+                MenuKit.Sep("Перенос настроек"),
                 MenuKit.Icon(Item("Сохранить настройки...", (s, e) => SaveSettings()), "save", "В файл, чтобы взять на другой компьютер"),
                 MenuKit.Icon(Item("Подгрузить настройки...", (s, e) => LoadSettings()), "load", "Взять из сохранённого файла"), MenuKit.Sep("Программа"),
                 MenuKit.Icon(Item("Открыть папку", (s, e) => Process.Start("explorer.exe", "\"" + paths.Root + "\"")), "folder", "Файлы и журнал программы"),
@@ -358,13 +363,17 @@ namespace ZapretTray
             try
             {
                 panel = new ControlPanel(statusItem, healthItem, statsItem, () => renderer.StatusColor, () => youtubeTime + "\t" + discordTime + "\t" + GameTimes() + "\t" + sitesTime,
-                    new[] { gamesItem, sitesItem, repairItem, settingsItem, hintsItem }, new[] { fastItem, bugItem ?? reportItem }, toggleItem, exitItem, () => { RefreshMenu(); },
+                    new[] { gamesItem, sitesItem, repairItem, checksItem, settingsItem, hintsItem }, new[] { fastItem, bugItem ?? reportItem }, toggleItem, exitItem, () => { RefreshMenu(); },
                     new Dictionary<ToolStripMenuItem, IPanelView>
                     {
                         { sitesItem, new SitesView(MySites,
                             (value, isIp) => { bool c; ApplyEntry(value, isIp, false, out c); },
                             (entry, exclude) => { bool c; ApplyEntry(entry.Item1, IsIpFile(entry.Item2), exclude, out c); },
                             entry => RemoveSite(entry.Item1, entry.Item2)) },
+                        { checksItem, new ChecksView(() => checks.All(),
+                            url => checks.Add(url),
+                            (c, req) => checks.SetRequired(c.Url, req),
+                            c => checks.Remove(c.Url)) },
                         { hintsItem, new HintsView() }
                     });
                 panel.RunningGame = () => runningGame;

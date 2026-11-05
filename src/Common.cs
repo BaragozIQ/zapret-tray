@@ -17,7 +17,7 @@ namespace ZapretTray
     static class AppInfo
     {
         public const string Name = "Zapret Tray";
-        public const string Version = "0.8";
+        public const string Version = "0.9";
         public const string RunTask = "ZapretTray";
         public const string AutoTask = "ZapretTray Autostart";
         public const string TrayExe = "ZapretTray.exe";
@@ -47,6 +47,7 @@ namespace ZapretTray
         public string IpsetUser { get { return Path.Combine(Lists, "tray-ipset-user.txt"); } }
         public string IpsetAdded { get { return Path.Combine(Lists, "tray-ipset-added.txt"); } }
         public string GamesList { get { return Path.Combine(Lists, "tray-games.txt"); } }
+        public string ChecksList { get { return Path.Combine(Lists, "tray-checks.txt"); } }
         public string ListGeneralUser { get { return Path.Combine(Lists, "list-general-user.txt"); } }
         public string ListExcludeUser { get { return Path.Combine(Lists, "list-exclude-user.txt"); } }
         public string IpsetExcludeUser { get { return Path.Combine(Lists, "ipset-exclude-user.txt"); } }
@@ -57,7 +58,7 @@ namespace ZapretTray
         // Файлы пользователя: при переустановке не перезаписываются
         public static readonly string[] UserFiles = {
             @"lists\list-general-user.txt", @"lists\list-exclude-user.txt", @"lists\ipset-exclude-user.txt",
-            @"lists\tray-ipset-user.txt", @"lists\tray-ipset-added.txt", @"lists\tray-games.txt",
+            @"lists\tray-ipset-user.txt", @"lists\tray-ipset-added.txt", @"lists\tray-games.txt", @"lists\tray-checks.txt",
             @"utils\best_config.txt", @"utils\tray.ini"
         };
     }

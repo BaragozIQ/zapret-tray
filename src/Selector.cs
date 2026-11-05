@@ -13,12 +13,15 @@ namespace ZapretTray
 {
     static class Selector
     {
-        public static readonly string[] Targets =
+        // Сайты по умолчанию, если список проверок пуст
+        public static readonly string[] Targets = CheckStore.Defaults.Select(c => c.Url).ToArray();
+
+        // Что реально проверяем сейчас (список из настроек «Обязательные проверки»)
+        public static string[] CheckUrls(AppPaths paths)
         {
-            "https://discord.com", "https://gateway.discord.gg", "https://cdn.discordapp.com", "https://updates.discord.com",
-            "https://www.youtube.com", "https://i.ytimg.com", "https://redirector.googlevideo.com", "https://www.google.com",
-            "https://arcraiders.com", "https://id.embark.games",
-        };
+            var all = new CheckStore(paths).All();
+            return (all.Count > 0 ? all : CheckStore.Defaults.ToList()).Select(c => c.Url).ToArray();
+        }
 
         const int CurlTimeout = 8;
         const int ConfirmPauseMs = 4000;
@@ -27,7 +30,8 @@ namespace ZapretTray
         class Score
         {
             public string File;
-            public int Ok;
+            public int ReqOk;   // сколько обязательных открылось
+            public int OptOk;   // сколько необязательных открылось
             public double Time;
         }
 
@@ -44,6 +48,14 @@ namespace ZapretTray
                 .OrderBy(f => Regex.Replace(Path.GetFileName(f), @"\d+", m => m.Value.PadLeft(8, '0')))
                 .ToList();
             if (bats.Count == 0) { error = "не найдено ни одного general*.bat"; return false; }
+
+            // Проверки из настроек: под обязательные подбираем, необязательные - для сведения.
+            var checks = new CheckStore(paths).All();
+            if (checks.Count == 0) checks = CheckStore.Defaults.ToList();
+            var urls = checks.Select(c => c.Url).ToArray();
+            var required = checks.Select(c => c.Required).ToArray();
+            int reqCount = required.Count(x => x);
+            if (reqCount == 0) { for (int i = 0; i < required.Length; i++) required[i] = true; reqCount = urls.Length; }  // ни одной обязательной - считаем все
 
             // До 3 запомненных конфигов, первый - лучший
             var saved = Util.ReadEntries(paths.BestConfig);
@@ -67,7 +79,7 @@ namespace ZapretTray
                     progress("Проверяю " + Path.GetFileNameWithoutExtension(file) + "...");
                     StopZapret();
                     StartConfig(paths, file);
-                    if (WaitWinwsReady() && AllOpen(name) && AllOpenAfterPause(name))
+                    if (WaitWinwsReady() && AllRequiredOpen(urls, required, name) && AllRequiredOpenAfterPause(urls, required, name))
                     {
                         // Рабочий - наверх списка, остальные запомненные за ним
                         Util.WriteLinesAtomic(paths.BestConfig, new[] { name }.Concat(saved.Where(n => n != name)));
@@ -88,14 +100,14 @@ namespace ZapretTray
                 StartConfig(paths, file);
                 if (!WaitWinwsReady()) continue;
 
-                var m = Measure(rounds, Path.GetFileName(file));
+                var m = Measure(rounds, urls, required, Path.GetFileName(file));
                 m.File = file;
                 scores.Add(m);
-                // Быстрый режим: первый, где всё работает. Случайную удачу отсеивает вторая проверка
-                if (!best && m.Ok == Targets.Length)
+                // Быстрый режим: первый, где открылись все обязательные. Случайную удачу отсеивает вторая проверка
+                if (!best && m.ReqOk == reqCount)
                 {
-                    if (AllOpenAfterPause(Path.GetFileName(file))) break;
-                    m.Ok--;
+                    if (AllRequiredOpenAfterPause(urls, required, Path.GetFileName(file))) break;
+                    m.ReqOk--;
                 }
             }
             StopZapret();
@@ -103,14 +115,14 @@ namespace ZapretTray
 
             if (scores.Count == 0) { error = "ни один конфиг не запустился"; return false; }
 
-            // Больше рабочих сайтов - лучше; при равенстве - меньше пинг
-            var top = scores.OrderByDescending(s => s.Ok).ThenBy(s => s.Time).ToList();
+            // Больше обязательных - лучше; при равенстве больше необязательных, потом меньше пинг
+            var top = scores.OrderByDescending(s => s.ReqOk).ThenByDescending(s => s.OptOk).ThenBy(s => s.Time).ToList();
             var winner = top[0];
-            Logger.Write("подбор: выбран " + Path.GetFileName(winner.File) + ", открылось " + winner.Ok + " из " + Targets.Length);
-            if (winner.Ok == 0) { error = "ни один сайт не открылся ни на одном конфиге - похоже, нет интернета"; return false; }
+            Logger.Write("подбор: выбран " + Path.GetFileName(winner.File) + ", обязательных открылось " + winner.ReqOk + " из " + reqCount);
+            if (winner.ReqOk == 0 && winner.OptOk == 0) { error = "ни один сайт не открылся ни на одном конфиге - похоже, нет интернета"; return false; }
 
-            // Запоминаем до 3 полностью рабочих конфигов (или хотя бы лучший) - запасные для быстрого режима
-            var keep = top.Where(s => s.Ok == Targets.Length).Take(3).ToList();
+            // Запоминаем до 3 конфигов, где открылись все обязательные (или хотя бы лучший) - запасные для быстрого режима
+            var keep = top.Where(s => s.ReqOk == reqCount).Take(3).ToList();
             if (keep.Count == 0) keep.Add(winner);
             Util.WriteLinesAtomic(paths.BestConfig, keep.Select(s => Path.GetFileName(s.File)));
 
@@ -150,40 +162,62 @@ namespace ZapretTray
             return false;
         }
 
-        // Все сайты параллельно. Время = TLS-рукопожатие в мс: тут DPI и тормозит, поэтому это и считаем "пингом"
-        static List<Tuple<bool, double>> Check(string config)
+        // Все сайты параллельно (в порядке urls). Время = TLS-рукопожатие в мс: тут DPI и тормозит, поэтому это и считаем "пингом"
+        static List<SiteResult> Probe(string[] urls, string config)
         {
-            var results = SiteCheck.RunAll(Targets, CurlTimeout);
+            var results = SiteCheck.RunAll(urls, CurlTimeout);
             var failed = results.Where(r => !r.Opened).Select(r => r.Url.Replace("https://", "") + ": " + r.Text).ToList();
             Logger.Write("подбор: " + config + ": открылось " + (results.Count - failed.Count) + " из " + results.Count
                          + (failed.Count > 0 ? " (" + string.Join("; ", failed) + ")" : ""));
-            return results.Select(r => Tuple.Create(r.Opened, r.TlsMs)).ToList();
+            return results;
         }
 
-        static bool AllOpen(string config)
+        // Считаем, сколько обязательных и необязательных открылось, и средний пинг по открывшимся
+        static void CountOpen(List<SiteResult> res, bool[] required, out int reqOk, out int optOk, out double avgTime)
         {
-            return Check(config).Count(r => r.Item1) == Targets.Length;
+            reqOk = optOk = 0;
+            double sum = 0;
+            int opened = 0;
+            for (int i = 0; i < res.Count; i++)
+            {
+                if (!res[i].Opened) continue;
+                if (i < required.Length && required[i]) reqOk++; else optOk++;
+                sum += res[i].TlsMs;
+                opened++;
+            }
+            avgTime = opened > 0 ? sum / opened : 0;
         }
 
-        static bool AllOpenAfterPause(string config)
+        static bool AllRequiredOpen(string[] urls, bool[] required, string config)
+        {
+            var res = Probe(urls, config);
+            for (int i = 0; i < res.Count; i++) if (i < required.Length && required[i] && !res[i].Opened) return false;
+            return true;
+        }
+
+        static bool AllRequiredOpenAfterPause(string[] urls, bool[] required, string config)
         {
             Thread.Sleep(ConfirmPauseMs);
-            return AllOpen(config + " (повторно)");
+            return AllRequiredOpen(urls, required, config + " (повторно)");
         }
 
         // Сайт считается рабочим, только если открылся во всех замерах; пинг - медиана средних по замерам
-        static Score Measure(int rounds, string config)
+        static Score Measure(int rounds, string[] urls, bool[] required, string config)
         {
-            var okCounts = new List<int>();
+            var reqOks = new List<int>();
+            var optOks = new List<int>();
             var avgs = new List<double>();
             for (int r = 0; r < rounds; r++)
             {
-                var res = Check(config).Where(x => x.Item1).ToList();
-                okCounts.Add(res.Count);
-                avgs.Add(res.Count > 0 ? res.Average(x => x.Item2) : 0);
+                int ro, oo;
+                double at;
+                CountOpen(Probe(urls, config), required, out ro, out oo, out at);
+                reqOks.Add(ro);
+                optOks.Add(oo);
+                avgs.Add(at);
             }
             avgs.Sort();
-            return new Score { Ok = okCounts.Min(), Time = avgs[avgs.Count / 2] };
+            return new Score { ReqOk = reqOks.Min(), OptOk = optOks.Min(), Time = avgs[avgs.Count / 2] };
         }
     }
 }

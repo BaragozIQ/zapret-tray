@@ -7,7 +7,7 @@ static class U{
  static object Call(Type t,string m,params object[] a){return t.GetMethod(m,BindingFlags.NonPublic|BindingFlags.Static|BindingFlags.Public).Invoke(null,a);}
  static void Entry(string s,string want,bool ip){string v;bool i;bool r=Util.ParseEntry(s,out v,out i);Ok(want==null?!r:(r&&v==want&&i==ip),"ввод сайта '"+s+"' -> "+(r?v:"отказ"));}
  [STAThread]static void Main(string[] a){string zip=a[0];Application.EnableVisualStyles();
-  try{Logic();Sign(zip);Package(zip);Settings();Hints();Stress();}catch(Exception e){Ok(false,"ТЕСТ УПАЛ: "+e);}
+  try{Logic();Sign(zip);Package(zip);Settings();Checks();Hints();Stress();}catch(Exception e){Ok(false,"ТЕСТ УПАЛ: "+e);}
   File.WriteAllLines("result.txt",log.Concat(new[]{"ИТОГО ok="+pass+" fail="+fail}));}
  static void Logic(){
   Entry("youtube.com","youtube.com",false);Entry("https://YouTube.com/watch?v=1","youtube.com",false);Entry("*.site.org","site.org",false);Entry("site.org:8443","site.org",false);
@@ -34,6 +34,25 @@ static class U{
    var big=Path.Combine(dir,"b.txt");using(var fs=File.Create(big))fs.SetLength(6*1024*1024);thrown=false;try{SettingsFile.Read(big,p);}catch(InvalidDataException){thrown=true;}Ok(thrown,"огромный файл не принимается");
   }finally{try{Directory.Delete(dir,true);}catch{}}}
  // Подсказки: название влезает в строку списка, каждый шаг - в свою кнопку, пояснение - в несколько строк плашки
+ static void Checks(){
+  Ok(CheckStore.Normalize("youtube.com")=="https://youtube.com","проверка: домен -> https://");
+  Ok(CheckStore.Normalize("https://WWW.YouTube.com/watch?v=1")=="https://www.youtube.com","проверка: ссылка -> только хост");
+  Ok(CheckStore.Normalize("  discord.com/app  ")=="https://discord.com","проверка: путь и пробелы убираются");
+  Ok(CheckStore.Normalize("не сайт")==null&&CheckStore.Normalize("")==null&&CheckStore.Normalize("foo")==null,"проверка: мусор отвергнут");
+  var dir=Path.Combine(Path.GetTempPath(),"zt-chk-"+Guid.NewGuid().ToString("N"));var p=new AppPaths(dir);Directory.CreateDirectory(p.Lists);
+  try{
+   var s=new CheckStore(p);
+   Ok(s.All().Count==CheckStore.Defaults.Length,"проверки: засеялись по умолчанию");
+   Ok(s.All().Count(c=>c.Required)==8,"проверки: 8 обязательных по умолчанию");
+   Ok(s.All().Any(c=>c.Url=="https://arcraiders.com"&&!c.Required),"проверки: игровой сайт необязательный");
+   s.Add("example.com");s.SetRequired("https://arcraiders.com",true);s.Remove("https://id.embark.games");
+   Ok(!s.Add("example.com"),"проверки: дубликат не добавляется");
+   var s2=new CheckStore(p);
+   Ok(s2.All().Any(c=>c.Url=="https://example.com"&&c.Required),"проверки: добавленный сохранился обязательным");
+   Ok(s2.All().Any(c=>c.Url=="https://arcraiders.com"&&c.Required),"проверки: переключение сохранилось");
+   Ok(!s2.All().Any(c=>c.Url=="https://id.embark.games"),"проверки: удалённый не вернулся");
+  }finally{try{Directory.Delete(dir,true);}catch{}}
+ }
  static void Hints(){var t=typeof(HintsView);int listW=(int)t.GetField("ListWidth",BindingFlags.NonPublic|BindingFlags.Static).GetValue(null),detailW=(int)t.GetField("DetailWidth",BindingFlags.NonPublic|BindingFlags.Static).GetValue(null);
   var rowFont=(Font)t.GetField("RowFont",BindingFlags.NonPublic|BindingFlags.Static).GetValue(null);var stepFont=(Font)t.GetField("StepFont",BindingFlags.NonPublic|BindingFlags.Static).GetValue(null);var noteFont=(Font)t.GetField("NoteFont",BindingFlags.NonPublic|BindingFlags.Static).GetValue(null);
   foreach(var page in new[]{"Broken","Setup","Auto"}){var list=(Array)t.GetField(page,BindingFlags.NonPublic|BindingFlags.Static).GetValue(null);foreach(var h in list){var ty=h.GetType();string title=(string)ty.GetField("Title").GetValue(h),note=(string)ty.GetField("Note").GetValue(h);var st=(string[])ty.GetField("Steps").GetValue(h);

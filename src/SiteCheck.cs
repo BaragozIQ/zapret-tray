@@ -325,7 +325,7 @@ namespace ZapretTray
             var service = Util.ServiceExists("zapret");
             var dnsFixed = DnsFix.IsApplied(paths);
             var internet = Util.InternetUp();
-            var sites = SiteCheck.RunAll(Selector.Targets, 8);
+            var sites = SiteCheck.RunAll(Selector.CheckUrls(paths), 8);
             var control = SiteCheck.RunAll(ControlSites, 8);
             var local = ReadLocalState(paths);
             var dnsLines = DnsHosts.SelectMany(h => DnsServers.Select(s => Task.Factory.StartNew(() => DnsLine(h, s), TaskCreationOptions.LongRunning))).ToList();
