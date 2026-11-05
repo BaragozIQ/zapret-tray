@@ -61,10 +61,12 @@ namespace ZapretTray
         readonly System.Windows.Forms.Timer gameTimer = new System.Windows.Forms.Timer();
         readonly System.Windows.Forms.Timer updateTimer = new System.Windows.Forms.Timer();
         bool updating;
+        Updater.Release appUpdate;    // найденная новая версия программы: показываем кнопку "Обновить до ..."
+        string updateNotified;        // про какую версию уже предупредили, чтобы не повторяться
 
         InfoItem statusItem, healthItem, statsItem;
         ToolStripMenuItem toggleItem, repairItem, fastItem, bestItem, manualItem;
-        ToolStripMenuItem scaleItem, bugItem, sitesItem, reportItem, settingsItem, themeItem, autoupdateItem, notifyItem, updateItem, dnsFixItem, dnsUndoItem;
+        ToolStripMenuItem scaleItem, bugItem, sitesItem, reportItem, settingsItem, themeItem, autoupdateItem, notifyItem, updateItem, updateNowItem, dnsFixItem, dnsUndoItem;
         bool dnsBusy, dnsAutoTried, watchVpnLogged;
 
         // Значки в меню: результат последней проверки, null - проверки ещё не было
@@ -138,6 +140,7 @@ namespace ZapretTray
             Application.ThreadException += (s, e) => OnCrash(e.Exception);
             LoadHistory();
             games = new GameStore(paths);
+            ControlPanel.LoadAppPics(paths.IconsDir);
             BugReport.MachineId(settings);   // номер компьютера появляется при первом запуске
 
             iconOn = MakeIcon(Color.FromArgb(46, 170, 80));
@@ -185,7 +188,7 @@ namespace ZapretTray
 
             // Первая проверка обновлений через 2 минуты после запуска, дальше раз в час смотрим, прошли ли сутки
             updateTimer.Interval = 2 * 60 * 1000;
-            updateTimer.Tick += (s, e) => { updateTimer.Interval = 60 * 60 * 1000; CheckUpdate(false); };
+            updateTimer.Tick += (s, e) => { updateTimer.Interval = 30 * 60 * 1000; CheckUpdate(false); };
             updateTimer.Start();
 
             var lastVersion = settings.Get("version");
@@ -251,10 +254,10 @@ namespace ZapretTray
             healthItem = Info("", ItemKind.Health);
             statsItem = Info("", ItemKind.Stats);
 
-            gamesItem = MenuKit.Icon(Item("Мои игры", null), "games");
+            gamesItem = MenuKit.Icon(Item("Мои приложения", null), "games");
 
-            fastItem = MenuKit.Icon(Item("Подобрать: быстро", (s, e) => UserSelect("fast")), "fast", "Найдёт первый рабочий конфиг");
-            bestItem = MenuKit.Icon(Item("Подобрать: минимальный пинг", (s, e) => UserSelect("best")), "ping", "Проверит все и выберет лучший, это дольше");
+            fastItem = MenuKit.Icon(Item("Подобрать конфиг заново", (s, e) => UserSelect("fast")), "fast", "Если сайт или игра перестали открываться");
+            bestItem = MenuKit.Icon(Item("Подобрать конфиг с лучшим пингом", (s, e) => UserSelect("best")), "ping", "Проверит все и выберет быстрый, это дольше");
             manualItem = MenuKit.Icon(Item("Выбрать конфиг вручную", null), "list", "Если знаешь, какой нужен");
             sitesItem = MenuKit.Icon(Item("Мои сайты...", (s, e) => OpenSites()), "sites");
             reportItem = MenuKit.Icon(Item("Что-то не работает", (s, e) => MakeReport()), "report", "Скопирует отчёт, вставь его в чат");
@@ -297,13 +300,15 @@ namespace ZapretTray
             autostartItem = MenuKit.Icon(Item("Запускать вместе с Windows", null), "play", "Включается сама при входе");
             autostartItem.CheckOnClick = true;
             autostartItem.Click += (s, e) => SetAutostart(autostartItem.Checked);
-            autoupdateItem = MenuKit.Icon(Check("Обновляться автоматически", "autoupdate"), "refresh", "Раз в день, настройки сохраняются");
+            autoupdateItem = MenuKit.Icon(Check("Обновляться автоматически", "autoupdate"), "refresh", "Новые конфиги zapret ставит сама, новую версию программы - по кнопке");
             notifyItem = MenuKit.Icon(Check("Уведомления", "notify"), "bell", "Важные придут в любом случае");
 
             // Галочки "как программа себя ведёт" - отдельной группой
             behaviorItem = MenuKit.Icon(Item("Поведение", null), "config", "Сторож, автозапуск, обновления");
             behaviorItem.DropDownItems.AddRange(new ToolStripItem[] { watchdogItem, autostartItem, autoupdateItem, notifyItem });
             updateItem = MenuKit.Icon(Item("Проверить обновления", (s, e) => CheckUpdate(true)), "refresh");
+            // Появляется рядом с версией, когда вышла новая: пользователь сам нажимает "Обновить до ..."
+            updateNowItem = MenuKit.Icon(Item("Обновить", (s, e) => { if (appUpdate != null) InstallAppUpdate(appUpdate, true); }), "load", "Скачает и поставит новую версию, zapret перезапустится сам");
             settingsItem.DropDownItems.AddRange(new ToolStripItem[] {
                 // Все карточки парами, чтобы в рядах не было дыр
                 MenuKit.Sep("Вид"), themeItem, scaleItem, MenuKit.Sep("Работа"), behaviorItem, updateItem, MenuKit.Sep("Перенос настроек"),
@@ -436,6 +441,14 @@ namespace ZapretTray
             dnsUndoItem.Enabled = dnsApplied && !dnsBusy;
             autostartItem.Checked = Tasks.IsEnabled(AppInfo.AutoTask);
             updateItem.Text = "Проверить обновления (сейчас " + AppInfo.Version + ", zapret " + ZapretUpdater.LocalVersion(paths) + ")";
+            // Кнопка "Обновить до X.Y" стоит сразу под строкой с версией, только когда есть что ставить
+            settingsItem.DropDownItems.Remove(updateNowItem);
+            if (appUpdate != null)
+            {
+                updateNowItem.Text = "Обновить до " + appUpdate.Version;
+                int idx = settingsItem.DropDownItems.IndexOf(updateItem);
+                if (idx >= 0) settingsItem.DropDownItems.Insert(idx + 1, updateNowItem);
+            }
             foreach (ToolStripMenuItem t in themeItem.DropDownItems) t.Checked = (string)t.Tag == Theme.Mode;
             foreach (ToolStripMenuItem t in scaleItem.DropDownItems) t.Checked = (string)t.Tag == (settings.Get("scale") ?? "100");
 
@@ -453,7 +466,8 @@ namespace ZapretTray
             }
 
             gamesItem.DropDownItems.Clear();
-            gamesItem.DropDownItems.Add(MenuKit.Icon(Item("Добавить игру...", (s, e) => AddGame()), "plus", "Выбери запущенную игру из списка"));
+            gamesItem.DropDownItems.Add(MenuKit.Icon(Item("Добавить из установленных...", (s, e) => AddInstalled()), "plus", "Из списка программ или по файлу"));
+            gamesItem.DropDownItems.Add(MenuKit.Icon(Item("Добавить запущенную...", (s, e) => AddGame()), "play", "Выбрать из запущенных окон"));
 
             // Встроенные игры: обход по их доменам, клик - включить/выключить
             gamesItem.DropDownItems.Add(MenuKit.Sep("Встроенные игры"));
@@ -467,7 +481,7 @@ namespace ZapretTray
                 gamesItem.DropDownItems.Add(item);
             }
 
-            if (games.Games.Count > 0) gamesItem.DropDownItems.Add(MenuKit.Sep("Твои игры"));
+            if (games.Games.Count > 0) gamesItem.DropDownItems.Add(MenuKit.Sep("Твои приложения"));
             foreach (var g in games.Games.ToList())
             {
                 var game = g;
@@ -1858,24 +1872,47 @@ namespace ZapretTray
 
         void AddGame()
         {
-            var exe = ProcessPicker.Show();
-            if (exe == null) return;
-            var g = games.Add(exe);
+            var it = ProcessPicker.Show();
+            if (it != null) AfterAdd(it, false);
+        }
+
+        void AddInstalled()
+        {
+            var it = InstalledPicker.Show();
+            if (it != null) AfterAdd(it, true);
+        }
+
+        // Общий хвост: запомнить приложение, подтянуть иконку, включить слежение и сказать пользователю
+        void AfterAdd(PickItem it, bool installed)
+        {
+            var exe = it.Exe;
+            games.Add(exe);
+            // Иконка всегда: из exe (чётче), иначе из значка окна, что дал список
+            var png = Path.Combine(paths.IconsDir, exe + ".png");
+            bool saved = it.ExePath != null && AppScan.SaveIcon(it.ExePath, png) != null;
+            if (!saved && it.Icon != null) saved = AppScan.SaveImage(it.Icon, png);
+            if (saved) ControlPanel.LoadAppPics(paths.IconsDir);
             RefreshWatchedGames();
             ApplyGameFilter();
             if (flows.Error != null)
             {
-                Notify("Игра добавлена, но слежение не запустилось: " + flows.Error, ToolTipIcon.Warning);
+                Notify("Приложение добавлено, но слежение не запустилось: " + flows.Error, ToolTipIcon.Warning);
                 return;
             }
             SnapshotTcp();
             var vpn = Util.RunningVpn();
-            if (vpn != null)
+            if (installed)
             {
-                Notify("Игра " + exe + " добавлена, но запущен VPN (" + vpn + "): пока он включён, настоящие сервера игры не видны. Выключи его, пока играешь.", ToolTipIcon.Warning);
+                Notify("Приложение " + exe + " добавлено. Запусти его - и его сервера начнут добавляться сами." +
+                       (vpn != null ? "\nСейчас включён VPN (" + vpn + "): пока он работает, настоящие сервера не видны." : ""), ToolTipIcon.Info, true);
                 return;
             }
-            Notify("Игра " + exe + " добавлена. Пока она запущена, её сервера будут добавляться сами.\nМожно просто играть.", ToolTipIcon.Info, true);
+            if (vpn != null)
+            {
+                Notify("Приложение " + exe + " добавлено, но запущен VPN (" + vpn + "): пока он включён, настоящие сервера не видны. Выключи его, пока играешь.", ToolTipIcon.Warning);
+                return;
+            }
+            Notify("Приложение " + exe + " добавлено. Пока оно запущено, его сервера будут добавляться сами.\nМожно просто играть.", ToolTipIcon.Info, true);
         }
 
         void ToggleGame(Game g)
@@ -1891,6 +1928,8 @@ namespace ZapretTray
         {
             if (MessageBox.Show("Удалить " + g.Exe + " и все собранные адреса?", AppInfo.Name, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
             games.Remove(g);
+            try { File.Delete(Path.Combine(paths.IconsDir, g.Exe + ".png")); } catch { }
+            ControlPanel.LoadAppPics(paths.IconsDir);
             RefreshWatchedGames();
             ReapplyIpset();
             ApplyGameFilter();
@@ -2014,8 +2053,8 @@ namespace ZapretTray
             if (!manual)
             {
                 long last;
-                if (long.TryParse(settings.Get("update_check"), out last) && DateTime.UtcNow.Ticks - last < TimeSpan.FromHours(20).Ticks) return;
-                if (busy) return;   // не мешаем подбору конфига, попробуем через час
+                if (long.TryParse(settings.Get("update_check"), out last) && DateTime.UtcNow.Ticks - last < TimeSpan.FromMinutes(25).Ticks) return;
+                if (busy) return;   // не мешаем подбору конфига, попробуем в следующий раз
             }
             updating = true;
             var localZapret = ZapretUpdater.LocalVersion(paths);
@@ -2028,11 +2067,17 @@ namespace ZapretTray
                 if (app != null || core != null) settings.Set("update_check", DateTime.UtcNow.Ticks.ToString());
                 bool auto = autoupdateItem.Checked || manual;
 
-                // Сначала сама программа: в новой версии могут прийти и новые конфиги
+                // Сама программа: не ставим молча - показываем кнопку "Обновить до X.Y" у версии, нажимает пользователь
                 if (app != null && Updater.IsNewer(app.Version, AppInfo.Version))
                 {
-                    if (auto) InstallAppUpdate(app, manual);
-                    else Offer("Есть новая версия программы " + app.Version + ". Нажми, чтобы обновить.", () => InstallAppUpdate(app, true));
+                    appUpdate = app;
+                    RefreshMenu();
+                    if (panel != null) panel.Invalidate();
+                    if (updateNotified != app.Version)
+                    {
+                        updateNotified = app.Version;
+                        Notify("Вышла новая версия " + app.Version + ". Открой «Настройки» и нажми «Обновить до " + app.Version + "».", ToolTipIcon.Info, true);
+                    }
                     return;
                 }
                 if (core != null && Updater.IsNewer(core.Version, localZapret) && (manual || core.Version != settings.Get("zapret_skip")))
@@ -2187,55 +2232,4 @@ namespace ZapretTray
         }
     }
 
-    // Выбор запущенной игры из списка программ с окнами
-    static class ProcessPicker
-    {
-        public static string Show()
-        {
-            var items = Process.GetProcesses()
-                .Where(p => { try { return p.MainWindowHandle != IntPtr.Zero && p.Id != Process.GetCurrentProcess().Id; } catch { return false; } })
-                .Select(p => new { Name = p.ProcessName, Title = SafeTitle(p) })
-                .GroupBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
-                .Select(g => g.First())
-                .OrderBy(x => x.Name)
-                .ToList();
-
-            using (var f = new Form())
-            {
-                f.Text = "Добавить игру";
-                f.FormBorderStyle = FormBorderStyle.FixedDialog;
-                f.StartPosition = FormStartPosition.CenterScreen;
-                f.MinimizeBox = f.MaximizeBox = false;
-                f.TopMost = true;
-                f.Font = new Font("Segoe UI", 9);
-                f.ClientSize = new Size(460, 420);
-
-                var label = new Label
-                {
-                    Text = "Запусти игру и выбери её в списке. Дальше её сервера будут добавляться сами, пока она запущена.",
-                    Left = 12, Top = 10, Width = 436, Height = 36
-                };
-                var list = new ListBox { Left = 12, Top = 50, Width = 436, Height = 316, IntegralHeight = false };
-                foreach (var x in items) list.Items.Add(x.Name + (x.Title.Length > 0 ? "   —   " + x.Title : ""));
-                var refresh = new Button { Text = "Обновить", Left = 12, Top = 380, Width = 90 };
-                var ok = new Button { Text = "Добавить", Left = 266, Top = 380, Width = 88, DialogResult = DialogResult.OK };
-                var cancel = new Button { Text = "Отмена", Left = 360, Top = 380, Width = 88, DialogResult = DialogResult.Cancel };
-                refresh.Click += (s, e) => { f.DialogResult = DialogResult.Retry; f.Close(); };
-                list.DoubleClick += (s, e) => { if (list.SelectedIndex >= 0) { f.DialogResult = DialogResult.OK; f.Close(); } };
-                f.Controls.AddRange(new Control[] { label, list, refresh, ok, cancel });
-                f.AcceptButton = ok;
-                f.CancelButton = cancel;
-
-                var result = f.ShowDialog();
-                if (result == DialogResult.Retry) return Show();
-                if (result != DialogResult.OK || list.SelectedIndex < 0) return null;
-                return items[list.SelectedIndex].Name;
-            }
-        }
-
-        static string SafeTitle(Process p)
-        {
-            try { return p.MainWindowTitle ?? ""; } catch { return ""; }
-        }
-    }
 }

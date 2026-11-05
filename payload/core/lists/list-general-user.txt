@@ -7,3 +7,7 @@ arcraiders.com
 live.wardogs.bulkhead.pragmaengine.com
 firstlook.gg
 api.epicgames.dev
+# Instagram
+instagram.com
+cdninstagram.com
+fbcdn.net

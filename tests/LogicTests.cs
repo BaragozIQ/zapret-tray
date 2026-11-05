@@ -33,11 +33,13 @@ static class U{
    var empty=Path.Combine(dir,"z.txt");File.WriteAllText(empty,"");thrown=false;try{SettingsFile.Read(empty,p);}catch(InvalidDataException){thrown=true;}Ok(thrown,"пустой файл не принимается");
    var big=Path.Combine(dir,"b.txt");using(var fs=File.Create(big))fs.SetLength(6*1024*1024);thrown=false;try{SettingsFile.Read(big,p);}catch(InvalidDataException){thrown=true;}Ok(thrown,"огромный файл не принимается");
   }finally{try{Directory.Delete(dir,true);}catch{}}}
- static void Hints(){var t=typeof(HintsView);const int W=ControlPanel.CardWidth;
-  foreach(var page in new[]{"Broken","Setup","Auto"}){var list=(Array)t.GetField(page,BindingFlags.NonPublic|BindingFlags.Static).GetValue(null);using(var card=new Font("Segoe UI Semibold",11f))foreach(var h in list){var ty=h.GetType();string title=(string)ty.GetField("Title").GetValue(h),note=(string)ty.GetField("Note").GetValue(h);var st=(string[])ty.GetField("Steps").GetValue(h);
-    Ok(TextRenderer.MeasureText(title,card).Width<=W-62,"подсказка влезает, заголовок: "+title);
-    if(st.Length>0){int w=st.Sum(s=>TextRenderer.MeasureText(s,MenuKit.Small).Width+12)+(st.Length-1)*22;Ok(w<=W-28,"подсказка влезает, шаги: "+title+" ("+w+" из "+(W-28)+")");Ok(TextRenderer.MeasureText(note,MenuKit.Small).Width<=W-28,"подсказка влезает, пояснение: "+title);}
-    else{var sz=TextRenderer.MeasureText(note,MenuKit.Font,new Size(W-28,0),TextFormatFlags.WordBreak);Ok(sz.Height<=50,"подсказка влезает, текст: "+title);}}}
+ // Подсказки: название влезает в строку списка, каждый шаг - в свою кнопку, пояснение - в несколько строк плашки
+ static void Hints(){var t=typeof(HintsView);int listW=(int)t.GetField("ListWidth",BindingFlags.NonPublic|BindingFlags.Static).GetValue(null),detailW=(int)t.GetField("DetailWidth",BindingFlags.NonPublic|BindingFlags.Static).GetValue(null);
+  var rowFont=(Font)t.GetField("RowFont",BindingFlags.NonPublic|BindingFlags.Static).GetValue(null);var stepFont=(Font)t.GetField("StepFont",BindingFlags.NonPublic|BindingFlags.Static).GetValue(null);var noteFont=(Font)t.GetField("NoteFont",BindingFlags.NonPublic|BindingFlags.Static).GetValue(null);
+  foreach(var page in new[]{"Broken","Setup","Auto"}){var list=(Array)t.GetField(page,BindingFlags.NonPublic|BindingFlags.Static).GetValue(null);foreach(var h in list){var ty=h.GetType();string title=(string)ty.GetField("Title").GetValue(h),note=(string)ty.GetField("Note").GetValue(h);var st=(string[])ty.GetField("Steps").GetValue(h);
+    Ok(TextRenderer.MeasureText(title,rowFont).Width<=listW-64,"подсказка влезает в список: "+title);
+    foreach(var s in st)Ok(TextRenderer.MeasureText(s,stepFont).Width+32<=detailW-92,"шаг влезает в кнопку: "+title+" / "+s);
+    var sz=TextRenderer.MeasureText(note,noteFont,new Size(detailW-104,0),TextFormatFlags.WordBreak);Ok(sz.Height<=80,"пояснение не длиннее четырёх строк: "+title);}}
  }
  static void Stress(){foreach(var mode in new[]{Theme.Dark,Theme.Light}){Theme.Mode=mode;
   var st=MenuKit.Info("Работает\tALT",ItemKind.Status);var he=MenuKit.Info("✓\t✓\t1/2\t✓",ItemKind.Health);var sp=MenuKit.Info("↓ 8,4 МБ/с\t32 мс\t2 ч",ItemKind.Stats);var m=new ContextMenuStrip();m.Items.AddRange(new ToolStripItem[]{st,he,sp});

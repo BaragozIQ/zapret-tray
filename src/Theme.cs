@@ -189,9 +189,24 @@ namespace ZapretTray
         public static Size MeasureText(string text, Font font) { return System.Windows.Forms.TextRenderer.MeasureText(Measure, text, font); }
         public static Size MeasureText(string text, Font font, Size proposed) { return System.Windows.Forms.TextRenderer.MeasureText(Measure, text, font, proposed); }
         public static Size MeasureText(string text, Font font, Size proposed, TextFormatFlags flags) { return System.Windows.Forms.TextRenderer.MeasureText(Measure, text, font, proposed, flags); }
-        public static Size MeasureText(IDeviceContext dc, string text, Font font) { return MeasureText(text, font); }
-        public static Size MeasureText(IDeviceContext dc, string text, Font font, Size proposed) { return MeasureText(text, font, proposed); }
-        public static Size MeasureText(IDeviceContext dc, string text, Font font, Size proposed, TextFormatFlags flags) { return MeasureText(text, font, proposed, flags); }
+        public static Size MeasureText(IDeviceContext dc, string text, Font font) { return MeasureText(dc, text, font, Size.Empty, TextFormatFlags.Default); }
+        public static Size MeasureText(IDeviceContext dc, string text, Font font, Size proposed) { return MeasureText(dc, text, font, proposed, TextFormatFlags.Default); }
+
+        // Окно увеличено: меряем тем же шрифтом и на том же экране, где текст будет нарисован, и делим обратно.
+        // Мерить в 100% нельзя: крупный шрифт шире пропорции, и текст вылезал из рамки, которую по этой мерке строили
+        public static Size MeasureText(IDeviceContext dc, string text, Font font, Size proposed, TextFormatFlags flags)
+        {
+            Graphics g;
+            if (Plain(dc, out g)) return MeasureText(text, font, proposed, flags);
+            float k, scale;
+            Device(g, Rectangle.Empty, out k);
+            using (var m = g.Transform) scale = m.Elements[0];
+            var state = g.Save();
+            g.ResetTransform();
+            var size = System.Windows.Forms.TextRenderer.MeasureText(g, text, Scaled(font, k), new Size((int)(proposed.Width * scale), (int)(proposed.Height * scale)), flags);
+            g.Restore(state);
+            return new Size((int)Math.Ceiling(size.Width / scale), (int)Math.Ceiling(size.Height / scale));
+        }
     }
 
     // Пометки пунктов меню через Tag

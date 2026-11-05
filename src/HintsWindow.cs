@@ -1,5 +1,5 @@
-// Подсказки: три вкладки с карточками "что нужно - куда нажимать". Страница окна ControlPanel.
-// Новая функция в меню = новая карточка здесь
+// Подсказки: три вкладки, слева список "что случилось", справа шаги "куда нажимать". Страница окна ControlPanel.
+// Новая функция в меню = новая подсказка здесь
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -11,9 +11,11 @@ namespace ZapretTray
 {
     class HintsView : IPanelView
     {
-        // Всё влезает без прокрутки: самая длинная вкладка "Настроить", 5 рядов. Под неё подобрана высота окна ControlPanel
-        const int Gap = 12, RowGap = 12, CardWidth = ControlPanel.CardWidth, CardHeight = 106, LegendHeight = 150;
-        public const int Available = 5 * CardHeight + 4 * RowGap;
+        // Слева список "что случилось", справа выбранная подсказка: шаги по номерам, пояснение и кнопка, которая сразу открывает нужный раздел.
+        // Всё влезает без прокрутки: самая длинная вкладка "Настроить", 10 строк. Под эту высоту подобрано окно ControlPanel
+        public const int Available = 578;
+        const int Width = ControlPanel.CardWidth * 2 + 12, ListWidth = 292, Gap = 12, RowGap = 4, MaxRow = 56;
+        const int DetailWidth = Width - ListWidth - Gap, StepHeight = 54, AnimMs = 420;
 
         class Hint
         {
@@ -31,101 +33,309 @@ namespace ZapretTray
 
         static readonly Hint[] Broken =
         {
-            new Hint("sites", Blue, "Не открывается сайт", "Не помогло: Подключение → Подобрать: быстро",
+            new Hint("sites", Blue, "Не открывается сайт", "Не помогло - в «Подключении» нажми «Подобрать конфиг заново».",
                 "Мои сайты", "Впиши сайт или IP", "Добавить"),
-            new Hint("undo", Orange, "Сайт сломался от программы", "Переключатель в строке этого сайта",
-                "Мои сайты", "Выключи"),
-            new Hint("ping", Teal, "Всё лагает", "Жди, пока Z снова станет зелёным",
-                "Подключение", "Подобрать: минимальный пинг"),
-            new Hint("games", Green, "Лагает игра", "Пока игра запущена, на главной виден её пинг",
-                "Мои игры", "Добавить игру", "Запусти игру"),
-            new Hint("dns", Purple, "Крестик у YouTube", "Не помогло: там же нажми «Исправить DNS»",
-                "Подключение", "Подобрать: быстро"),
-            new Hint("undo", Purple, "После «Исправить DNS» стало хуже", "Настройки DNS станут как раньше",
+            new Hint("undo", Orange, "Сайт сломался от программы", "Сайт останется в списке, но обходить его программа больше не будет.",
+                "Мои сайты", "Выключи переключатель у сайта"),
+            new Hint("ping", Teal, "Всё лагает", "Проверка всех конфигов занимает пару минут. Жди, пока Z снова станет зелёным.",
+                "Подключение", "Подобрать конфиг с лучшим пингом"),
+            new Hint("games", Green, "Лагает игра", "Пока игра запущена, на главной в плитке «Приложения» виден её пинг.",
+                "Мои приложения", "Добавить из установленных", "Запусти игру"),
+            new Hint("dns", Purple, "Крестик у YouTube", "Не помогло - там же нажми «Исправить DNS». Обычно программа делает это сама.",
+                "Подключение", "Подобрать конфиг заново"),
+            new Hint("undo", Purple, "Стало хуже после DNS", "Настройки DNS станут ровно такими, какими были до исправления.",
                 "Подключение", "Вернуть DNS как было"),
-            new Hint("shield", Slate, "Включён VPN", "С ним значки показывают сеть VPN, а не zapret",
+            new Hint("shield", Slate, "Включён VPN", "С VPN плитки на главной показывают сеть VPN, а не работу zapret.",
                 "Выключи VPN"),
-            new Hint("report", Red, "Ничего не понятно", "Отчёт скопируется сам, вставь его в чат",
-                "Подключение", "Что-то не работает", "Ctrl+V")
+            new Hint("load", Red, "Ничего не понятно", "Отчёт сам уйдёт разработчику. Твоих личных данных в нём нет.",
+                "Главная", "Отправить баг")
         };
 
         static readonly Hint[] Setup =
         {
-            new Hint("list", Teal, "Выбрать конфиг самому", "В списке галочка стоит у текущего",
+            new Hint("list", Teal, "Выбрать конфиг самому", "В списке галочка стоит у конфига, который работает сейчас.",
                 "Подключение", "Выбрать конфиг вручную"),
-            new Hint("games", Green, "Встроенные игры", "Клик включает или выключает обход игры",
-                "Мои игры", "ARC Raiders или Wardogs"),
-            new Hint("games", Green, "Выключить или убрать свою игру", "«Удалить» стирает и собранные адреса",
-                "Мои игры", "Имя игры", "Включена или Удалить"),
-            new Hint("sites", Blue, "Убрать сайт из списка", "Крестик справа в строке сайта",
+            new Hint("games", Green, "Встроенные игры", "Клик по игре включает или выключает для неё обход.",
+                "Мои приложения", "ARC Raiders или Wardogs"),
+            new Hint("games", Green, "Выключить или убрать", "«Удалить» стирает и адреса, которые программа собрала для приложения.",
+                "Мои приложения", "Нажми на приложение", "Включена или Удалить"),
+            new Hint("sites", Blue, "Убрать сайт из списка", "Крестик справа в строке сайта.",
                 "Мои сайты", "Нажми ✕"),
-            new Hint("theme", Slate, "Тёмная или светлая тема", "Чтобы как в Windows: Настройки → Тема",
+            new Hint("theme", Slate, "Тёмная или светлая тема", "Чтобы тема была как в Windows: «Настройки» → «Тема».",
                 "День или Ночь внизу слева"),
-            new Hint("config", Slate, "Сторож, автозапуск, уведомления", "И обновления: убери или поставь галочку",
+            new Hint("config", Slate, "Сторож и автозапуск", "И уведомления, и автообновление: поставь или убери нужную галочку.",
                 "Настройки", "Поведение", "Нужная галочка"),
-            new Hint("save", Blue, "Перенести на другой компьютер", "Там: Настройки → Подгрузить настройки",
+            new Hint("monitor", Slate, "Окно мелкое или большое", "Ползунок от 75 до 200%. Больше экрана окно не станет.",
+                "Настройки", "Размер окна"),
+            new Hint("save", Blue, "Перенести на другой компьютер", "На другом компьютере: «Настройки» → «Подгрузить настройки».",
                 "Настройки", "Сохранить настройки"),
-            new Hint("refresh", Teal, "Обновить прямо сейчас", "Обычно программа обновляется сама",
+            new Hint("refresh", Teal, "Обновить прямо сейчас", "Обычно программа обновляется сама, раз в день.",
                 "Настройки", "Проверить обновления"),
-            new Hint("folder", Orange, "Найти файлы программы", "Там лежат конфиги и журнал",
-                "Настройки", "Открыть папку"),
-            new Hint("trash", Red, "Удалить программу", "Сначала спросит. Твои сайты и игры тоже удалятся",
+            new Hint("trash", Red, "Удалить программу", "Сначала спросит. Твои сайты и игры тоже удалятся.",
                 "Настройки", "Удалить программу")
         };
 
+        // Первые две - таблички со значками, их рисует DrawLegend
         static readonly Hint[] Auto =
         {
-            new Hint("shield", Green, "Сама чинит", "Проверяет YouTube и Discord. Сломалось: сменит конфиг или включит защищённый DNS"),
-            new Hint("list", Teal, "Сама запоминает", "Помнит рабочие конфиги и проверяет их первыми, поэтому включается быстро"),
-            new Hint("refresh", Blue, "Сама обновляется", "Раз в день проверяет обновления. Твои настройки остаются на месте"),
-            new Hint("bell", Orange, "Когда придёт уведомление", "Когда сама не справилась, например не нашла рабочий конфиг. Остальное делает молча"),
-            new Hint("sites", Slate, "Наведи мышку на Z", "Покажет текущий конфиг, скорость и пинг. Открывать окно не нужно"),
-            new Hint("exit", Red, "Закрыть программу", "Кнопка внизу слева, zapret тоже выключится", "Выход")
+            new Hint("power", Green, "Значок Z у часов", "Два клика по Z включают или выключают программу. Наведи мышь - покажет конфиг, скорость и пинг."),
+            new Hint("list", Teal, "Значки на главной", "Нажми на плитку - она проверится заново. Наведи мышь на график - покажет число."),
+            new Hint("shield", Green, "Сама чинит", "Проверяет YouTube и Discord. Сломалось - сменит конфиг или сама исправит DNS."),
+            new Hint("list", Teal, "Сама запоминает", "Помнит рабочие конфиги и проверяет их первыми, поэтому включается быстро."),
+            new Hint("refresh", Blue, "Сама обновляется", "Раз в день проверяет обновления. Твои сайты, игры и настройки остаются на месте."),
+            new Hint("bell", Orange, "Когда придёт уведомление", "Только когда сама не справилась, например не нашла рабочий конфиг. Остальное делает молча."),
+            new Hint("exit", Red, "Закрыть программу", "Кнопка «Выход» внизу слева. zapret при этом тоже выключится.")
         };
 
         static readonly string[] Tabs = { "Если сломалось", "Настроить", "Что значат значки" };
+        // Разделы, которые кнопка внизу подсказки умеет открыть
+        static readonly string[] Sections = { "Главная", "Мои приложения", "Мои сайты", "Подключение", "Настройки" };
 
         const TextFormatFlags Line = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine;
         const TextFormatFlags Center = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+        const TextFormatFlags Wrap = TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak;
 
-        readonly Font cardFont = new Font("Segoe UI Semibold", 11f);
-        readonly Font titleFont = new Font("Segoe UI Semibold", 13f);
+        static readonly Font RowFont = new Font("Segoe UI Semibold", 10f);
+        static readonly Font TitleFont = new Font("Segoe UI Semibold", 13f);
+        static readonly Font BigFont = new Font("Segoe UI Semibold", 15f);
+        static readonly Font StepFont = new Font("Segoe UI Semibold", 10f);
+        static readonly Font NoteFont = new Font("Segoe UI", 10f);
+
         readonly List<Rectangle> tabRects = new List<Rectangle>();
-        public int Page;
+        readonly List<Rectangle> rowRects = new List<Rectangle>();
+        readonly int[] selected = new int[3];
+        Rectangle openButton;
+        int page;
+        int animStart = -1;
+        Timer anim;
+        Control host;
+
+        public int Page
+        {
+            get { return page; }
+            set { page = value; Animate(); }
+        }
 
         static Palette P { get { return Theme.Current; } }
 
         public int Extra { get { return 0; } }
-        public void Activate(Control host, bool on) { }
+
+        public void Activate(Control host, bool on)
+        {
+            this.host = host;
+            if (on) Animate();
+        }
+
+        Hint[] Current { get { return page == 0 ? Broken : page == 1 ? Setup : Auto; } }
+        Hint Chosen { get { return Current[Math.Min(selected[page], Current.Length - 1)]; } }
+
+        static string Section(Hint h)
+        {
+            return h.Steps.Length > 0 && Array.IndexOf(Sections, h.Steps[0]) >= 0 ? h.Steps[0] : null;
+        }
+
+        // Шаги выезжают по очереди, пока таймер не дойдёт до конца
+        void Animate()
+        {
+            animStart = Environment.TickCount;
+            if (host == null) return;
+            if (anim == null)
+            {
+                anim = new Timer { Interval = 15 };
+                anim.Tick += (s, e) =>
+                {
+                    if (host == null || host.IsDisposed || Environment.TickCount - animStart > AnimMs + 60) { anim.Stop(); animStart = -1; }
+                    if (host != null && !host.IsDisposed) host.Invalidate();
+                };
+            }
+            anim.Start();
+        }
+
+        // 0 - ещё не появился, 1 - на месте. delay - когда начинает выезжать, доля от общего времени
+        float Appear(float delay)
+        {
+            if (animStart < 0) return 1f;
+            float t = (Environment.TickCount - animStart) / (float)AnimMs;
+            float k = Math.Max(0f, Math.Min(1f, (t - delay) / 0.45f));
+            return 1f - (1f - k) * (1f - k) * (1f - k);
+        }
 
         public void DrawHeader(Graphics g, Rectangle r, Point mouse)
         {
             tabRects.Clear();
-            ControlPanel.PageTitle(g, "Подсказки", titleFont, r.Left, r.Top - 2, 34, 130);
+            ControlPanel.PageTitle(g, "Подсказки", TitleFont, r.Left, r.Top - 2, 34, 130);
             int x = r.Left + 140;
             for (int i = 0; i < Tabs.Length; i++)
             {
-                var tab = new Rectangle(x, r.Top, TextRenderer.MeasureText(Tabs[i], MenuKit.Bold).Width + 28, 34);
+                var tab = new Rectangle(x, r.Top, TextRenderer.MeasureText(g, Tabs[i], MenuKit.Bold).Width + 28, 34);
                 tabRects.Add(tab);
-                if (i == Page) ControlPanel.Accent(g, tab, 9);
+                if (i == page) ControlPanel.Accent(g, tab, 9);
                 else ControlPanel.Card(g, tab, tab.Contains(mouse) ? P.Hover : P.Card, 9);
-                TextRenderer.DrawText(g, Tabs[i], MenuKit.Bold, tab, i == Page ? Color.White : P.Text, Center);
+                TextRenderer.DrawText(g, Tabs[i], MenuKit.Bold, tab, i == page ? Color.White : P.Text, Center);
                 x = tab.Right + 6;
             }
         }
 
         public int Draw(Graphics g, int x, int top, Point mouse)
         {
-            int y = top;
-            if (Page == 2)
-            {
-                DrawLegend(g, x, y);
-                y += LegendHeight + RowGap;
-            }
-            var hints = Page == 0 ? Broken : Page == 1 ? Setup : Auto;
-            for (int i = 0; i < hints.Length; i++)
-                DrawCard(g, hints[i], x + (i % 2) * (CardWidth + Gap), y + (i / 2) * (CardHeight + RowGap));
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            // Отступ сверху: верхний край карточек не должен прятаться под шапкой
+            top += 2;
+            DrawList(g, x, top, mouse);
+            DrawDetail(g, new Rectangle(x + ListWidth + Gap, top, DetailWidth, Available - 2), mouse);
             return Available;
+        }
+
+        // Список слева: строка как пункт меню, выбранная подсвечена цветом своей подсказки и полоской слева
+        void DrawList(Graphics g, int x, int top, Point mouse)
+        {
+            rowRects.Clear();
+            var hints = Current;
+            int row = Math.Min(MaxRow, (Available - 2 - RowGap * (hints.Length - 1)) / hints.Length);
+            for (int i = 0; i < hints.Length; i++)
+            {
+                var r = new Rectangle(x, top + i * (row + RowGap), ListWidth, row);
+                rowRects.Add(r);
+                bool chosen = i == selected[page], hot = !chosen && r.Contains(mouse);
+                var h = hints[i];
+                if (chosen)
+                {
+                    ControlPanel.Card(g, r, ControlPanel.Mix(P.Card, h.Color, 0.18f), 10, ControlPanel.Mix(h.Color, P.Card, 0.35f));
+                    using (var b = new SolidBrush(h.Color)) using (var path = ThemedRenderer.RoundRect(new Rectangle(r.Left + 1, r.Top + 12, 3, r.Height - 24), 1)) g.FillPath(b, path);
+                }
+                else ControlPanel.Card(g, r, hot ? P.Hover : P.Card, 10);
+                ControlPanel.Badge(g, new Rectangle(r.Left + 12, r.Top + (r.Height - 30) / 2, 30, 30), h.Color, h.Icon);
+                TextRenderer.DrawText(g, h.Title, RowFont, new Rectangle(r.Left + 52, r.Top, r.Width - 64, r.Height), P.Text, Line);
+            }
+        }
+
+        void DrawDetail(Graphics g, Rectangle r, Point mouse)
+        {
+            var h = Chosen;
+            ControlPanel.Card(g, r, P.Card, 12);
+            var state = g.Save();
+            using (var clip = ThemedRenderer.RoundRect(new Rectangle(r.Left + 1, r.Top + 1, r.Width - 2, r.Height - 2), 11)) g.SetClip(clip, CombineMode.Intersect);
+            ControlPanel.Glow(g, new Rectangle(r.Right - 300, r.Top - 220, 520, 400), h.Color, 70);
+            g.Restore(state);
+
+            // Шапка: большой значок, заголовок, вкладка
+            float a = Appear(0f);
+            int shift = (int)((1 - a) * 14);
+            ControlPanel.Badge(g, new Rectangle(r.Left + 24, r.Top + 24 + shift, 56, 56), h.Color, h.Icon);
+            TextRenderer.DrawText(g, h.Title, BigFont, new Rectangle(r.Left + 96, r.Top + 24 + shift, r.Width - 120, 32), P.Text, Line);
+            TextRenderer.DrawText(g, Tabs[page], MenuKit.Small, new Rectangle(r.Left + 97, r.Top + 56 + shift, r.Width - 120, 20), h.Color, Line);
+            using (var pen = new Pen(P.Separator)) g.DrawLine(pen, r.Left + 24, r.Top + 100, r.Right - 24, r.Top + 100);
+
+            int y = r.Top + 118;
+            if (page == 2 && selected[2] < 2)
+                y = DrawLegend(g, r, y, selected[2] == 0);
+            else if (h.Steps.Length > 0)
+                y = DrawSteps(g, r, y, h);
+
+            // Пояснение в цветной плашке
+            float na = Appear(0.15f + 0.12f * h.Steps.Length);
+            if (na > 0)
+            {
+                int ny = y + 8 + (int)((1 - na) * 12);
+                var size = TextRenderer.MeasureText(g, h.Note, NoteFont, new Size(r.Width - 48 - 56, 0), Wrap);
+                var box = new Rectangle(r.Left + 24, ny, r.Width - 48, Math.Max(52, size.Height + 28));
+                ControlPanel.Box(g, box, ControlPanel.Mix(P.Card, h.Color, 0.12f), 10);
+                using (var path = ThemedRenderer.RoundRect(box, 10))
+                using (var pen = new Pen(ControlPanel.Mix(h.Color, P.Card, 0.55f))) g.DrawPath(pen, path);
+                DrawInfo(g, box.Left + 14, box.Top + 14, h.Color);
+                TextRenderer.DrawText(g, h.Note, NoteFont, new Rectangle(box.Left + 46, box.Top + 14, size.Width + 4, size.Height + 4), P.Text, Wrap);
+            }
+
+            // Кнопка внизу: сразу открыть раздел, о котором подсказка
+            openButton = Rectangle.Empty;
+            var section = Section(h);
+            if (section != null && Appear(0.35f) > 0)
+            {
+                string text = section == "Главная" ? "Открыть главную" : "Открыть «" + section + "»";
+                int w = TextRenderer.MeasureText(g, text, MenuKit.Bold).Width + 64;
+                openButton = new Rectangle(r.Left + 24, r.Bottom - 24 - 44, w, 44);
+                ControlPanel.Accent(g, openButton, 10);
+                if (openButton.Contains(mouse))
+                    using (var b = new SolidBrush(Color.FromArgb(40, Color.White))) using (var path = ThemedRenderer.RoundRect(openButton, 10)) g.FillPath(b, path);
+                TextRenderer.DrawText(g, text, MenuKit.Bold, new Rectangle(openButton.Left + 18, openButton.Top, w - 50, 44), Color.White, Line);
+                using (var p = new Pen(Color.White, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                {
+                    int cx = openButton.Right - 24, cy = openButton.Top + 22;
+                    g.DrawLine(p, cx - 7, cy, cx + 5, cy);
+                    g.DrawLine(p, cx, cy - 5, cx + 5, cy);
+                    g.DrawLine(p, cx, cy + 5, cx + 5, cy);
+                }
+            }
+        }
+
+        // Шаги столбиком: номер в кружке, линия к следующему, сам шаг - как кнопка в программе. Последний - главный, синий
+        int DrawSteps(Graphics g, Rectangle r, int y, Hint h)
+        {
+            TextRenderer.DrawText(g, "ЧТО НАЖАТЬ", MenuKit.Small, new Rectangle(r.Left + 24, y - 6, 200, 20), P.SubText, Line);
+            y += 22;
+            int n = h.Steps.Length;
+            for (int i = 0; i < n; i++)
+            {
+                float a = Appear(0.1f + 0.12f * i);
+                if (a <= 0) continue;
+                int sy = y + i * StepHeight + (int)((1 - a) * 16);
+                int cx = r.Left + 40, cy = sy + 19;
+                bool last = i == n - 1;
+                if (i < n - 1)
+                    using (var pen = new Pen(ControlPanel.Mix(h.Color, P.Card, 0.45f), 2f)) g.DrawLine(pen, cx, cy + 15, cx, cy + StepHeight - 15);
+                var circle = new Rectangle(cx - 14, cy - 14, 28, 28);
+                if (last) ControlPanel.Glow(g, new Rectangle(cx - 26, cy - 26, 52, 52), h.Color, 90);
+                using (var b = new SolidBrush(last ? h.Color : ControlPanel.Mix(P.Card, h.Color, 0.25f))) g.FillEllipse(b, circle);
+                TextRenderer.DrawText(g, (i + 1).ToString(), MenuKit.Bold, circle, last ? Color.White : P.Text, Center);
+
+                int w = Math.Min(r.Right - 24 - (r.Left + 68), TextRenderer.MeasureText(g, h.Steps[i], StepFont).Width + 32);
+                var pill = new Rectangle(r.Left + 68, cy - 19, w, 38);
+                if (last) ControlPanel.Accent(g, pill, 9);
+                else ControlPanel.Card(g, pill, P.Tile, 9);
+                TextRenderer.DrawText(g, h.Steps[i], StepFont, new Rectangle(pill.Left + 16, pill.Top, pill.Width - 24, pill.Height), last ? Color.White : P.Text, Line);
+            }
+            return y + n * StepHeight;
+        }
+
+        // Таблички на вкладке "Что значат значки": крупные значки и подписи столбиком
+        int DrawLegend(Graphics g, Rectangle r, int y, bool z)
+        {
+            TextRenderer.DrawText(g, z ? "ЦВЕТ ЗНАЧКА" : "ЧТО В ПЛИТКЕ", MenuKit.Small, new Rectangle(r.Left + 24, y - 6, 200, 20), P.SubText, Line);
+            y += 22;
+            var rows = z
+                ? new[] { Tuple.Create("on", "Работает"), Tuple.Create("off", "Выключен"), Tuple.Create("busy", "Подбирает настройки, подожди") }
+                : new[] { Tuple.Create("✓", "Открывается"), Tuple.Create("✗", "Не открывается"), Tuple.Create("3/4", "Открылись не все") };
+            for (int i = 0; i < rows.Length; i++)
+            {
+                float a = Appear(0.1f + 0.12f * i);
+                if (a <= 0) continue;
+                int sy = y + i * StepHeight + (int)((1 - a) * 16);
+                var tile = new Rectangle(r.Left + 24, sy, 38, 38);
+                if (z)
+                {
+                    var color = rows[i].Item1 == "on" ? Theme.On : rows[i].Item1 == "off" ? Theme.Off : Theme.Busy;
+                    ControlPanel.Glow(g, new Rectangle(tile.Left - 10, tile.Top - 10, 58, 58), color, 70);
+                    ControlPanel.Box(g, tile, color, 19);
+                    TextRenderer.DrawText(g, "Z", RowFont, tile, Color.White, Center);
+                }
+                else
+                {
+                    ControlPanel.Card(g, tile, P.Tile, 9);
+                    bool count = rows[i].Item1.Length > 1;
+                    ThemedRenderer.DrawResult(g, rows[i].Item1, count ? tile.Left + 4 : tile.Left + 13, tile.Top + 19, 30, tile);
+                }
+                TextRenderer.DrawText(g, rows[i].Item2, StepFont, new Rectangle(r.Left + 78, sy, r.Width - 102, 38), P.Text, Line);
+            }
+            return y + rows.Length * StepHeight;
+        }
+
+        // Значок "i" в кружке для пояснения
+        static void DrawInfo(Graphics g, int x, int y, Color color)
+        {
+            using (var b = new SolidBrush(color)) g.FillEllipse(b, x, y, 20, 20);
+            using (var p = new Pen(Color.White, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                g.DrawLine(p, x + 10, y + 9, x + 10, y + 14.5f);
+            g.FillEllipse(Brushes.White, x + 9, y + 4.5f, 2.2f, 2.2f);
         }
 
         public bool HeaderHot(Point p)
@@ -134,95 +344,32 @@ namespace ZapretTray
             return false;
         }
 
-        public bool Hot(Point p) { return false; }
+        public bool Hot(Point p)
+        {
+            if (openButton.Contains(p)) return true;
+            for (int i = 0; i < rowRects.Count; i++) if (rowRects[i].Contains(p) && i != selected[page]) return true;
+            return false;
+        }
 
         public bool Click(Point p)
         {
             for (int i = 0; i < tabRects.Count; i++)
             {
-                if (!tabRects[i].Contains(p) || i == Page) continue;
+                if (!tabRects[i].Contains(p) || i == page) continue;
                 Page = i;
                 return true;
             }
+            for (int i = 0; i < rowRects.Count; i++)
+            {
+                if (!rowRects[i].Contains(p) || i == selected[page]) continue;
+                selected[page] = i;
+                Animate();
+                return false;
+            }
+            var panel = host as ControlPanel;
+            var section = Section(Chosen);
+            if (openButton.Contains(p) && panel != null && section != null) panel.OpenByName(section);
             return false;
-        }
-
-        // Что значат цвета Z и значки: две карточки, в каждой столбик "значок - подпись"
-        void DrawLegend(Graphics g, int x, int y)
-        {
-            int rx = x + CardWidth + Gap;
-
-            LegendCard(g, x, y, "Значок Z у часов", "Два клика по Z: включить или выключить");
-            ControlPanel.Box(g, new Rectangle(x + 12, y + 10, 28, 28), Theme.On, 14);
-            TextRenderer.DrawText(g, "Z", cardFont, new Rectangle(x + 12, y + 10, 28, 28), Color.White, Center);
-            LegendDot(g, x, y + 46, Theme.On, "работает");
-            LegendDot(g, x, y + 68, Theme.Off, "выключен");
-            LegendDot(g, x, y + 90, Theme.Busy, "подбирает настройки, подожди");
-
-            LegendCard(g, rx, y, "Значки на главной", "Нажми на плитку на главной, и она проверится заново");
-            ControlPanel.Badge(g, new Rectangle(rx + 11, y + 9, 30, 30), P.Check, "list");
-            LegendMark(g, rx, y + 46, "✓", "открывается");
-            LegendMark(g, rx, y + 68, "✗", "не открывается");
-            LegendMark(g, rx, y + 90, "3/4", "открылись не все");
-        }
-
-        void LegendCard(Graphics g, int x, int y, string title, string note)
-        {
-            ControlPanel.Card(g, new Rectangle(x, y, CardWidth, LegendHeight), P.Card, 10);
-            TextRenderer.DrawText(g, title, cardFont, new Rectangle(x + 50, y + 10, CardWidth - 62, 28), P.Text, Line);
-            TextRenderer.DrawText(g, note, MenuKit.Small, new Rectangle(x + 14, y + 120, CardWidth - 28, 20), P.SubText, Line);
-        }
-
-        // Значки стоят в колонке шириной с большой значок сверху, подписи начинаются на линии заголовка
-        void LegendDot(Graphics g, int x, int y, Color color, string text)
-        {
-            using (var b = new SolidBrush(color)) g.FillEllipse(b, x + 20, y + 5, 12, 12);
-            TextRenderer.DrawText(g, text, MenuKit.Font, new Rectangle(x + 50, y, CardWidth - 62, 22), P.Text, Line);
-        }
-
-        void LegendMark(Graphics g, int x, int y, string mark, string text)
-        {
-            bool count = mark.Length > 1;
-            ThemedRenderer.DrawResult(g, mark, count ? x + 14 : x + 21, y + 11, 30, new Rectangle(x + 14, y, 30, 22));
-            TextRenderer.DrawText(g, text, MenuKit.Font, new Rectangle(x + 50, y, CardWidth - 62, 22), P.Text, Line);
-        }
-
-        void DrawCard(Graphics g, Hint h, int x, int y)
-        {
-            ControlPanel.Card(g, new Rectangle(x, y, CardWidth, CardHeight), P.Card, 10);
-            ControlPanel.Badge(g, new Rectangle(x + 11, y + 9, 30, 30), h.Color, h.Icon);
-            TextRenderer.DrawText(g, h.Title, cardFont, new Rectangle(x + 50, y + 10, CardWidth - 62, 28), P.Text, Line);
-
-            // Карточка без кнопок: просто объяснение на две строки
-            if (h.Steps.Length == 0)
-            {
-                TextRenderer.DrawText(g, h.Note, MenuKit.Font, new Rectangle(x + 14, y + 46, CardWidth - 28, 50), P.SubText,
-                    TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak);
-                return;
-            }
-
-            int px = x + 14, py = y + 44;
-            for (int i = 0; i < h.Steps.Length; i++)
-            {
-                bool last = i == h.Steps.Length - 1;
-                int w = TextRenderer.MeasureText(h.Steps[i], MenuKit.Small).Width + 12;
-                if (last) ControlPanel.Accent(g, new Rectangle(px, py, w, 24), 7);
-                else ControlPanel.Box(g, new Rectangle(px, py, w, 24), P.Tile, 7);
-                TextRenderer.DrawText(g, h.Steps[i], MenuKit.Small, new Rectangle(px, py, w, 24), last ? Color.White : P.Text, Center);
-                px += w;
-                if (!last)
-                {
-                    using (var p = new Pen(P.SubText, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-                    {
-                        int cy = py + 12;
-                        g.DrawLine(p, px + 6, cy, px + 16, cy);
-                        g.DrawLine(p, px + 12, cy - 4, px + 16, cy);
-                        g.DrawLine(p, px + 12, cy + 4, px + 16, cy);
-                    }
-                    px += 22;
-                }
-            }
-            TextRenderer.DrawText(g, h.Note, MenuKit.Small, new Rectangle(x + 14, y + 75, CardWidth - 28, 20), P.SubText, Line);
         }
     }
 
@@ -612,6 +759,12 @@ namespace ZapretTray
 
         static readonly Dictionary<string, Item[]> Notes = new Dictionary<string, Item[]>
         {
+            { "0.8", new[] {
+                new Item("games", Color.FromArgb(230, 126, 34), "Мои приложения", "Бывшие «Мои игры»: теперь не только игры"),
+                new Item("plus", Color.FromArgb(46, 160, 67), "Добавить из установленных", "Список твоих программ со значками, или выбери файл"),
+                new Item("games", Color.FromArgb(14, 136, 232), "Настоящие иконки", "У добавленного приложения виден его значок"),
+                new Item("refresh", Color.FromArgb(142, 84, 233), "Кнопка «Обновить»", "Новая версия ставится по твоему нажатию в «Настройках»"),
+                new Item("sites", Color.FromArgb(0, 150, 160), "Instagram", "Добавлен в список по умолчанию") } },
             { "0.7", new[] {
                 new Item("ping", Color.FromArgb(142, 84, 233), "Графики за час", "В каждой плитке. Наведи мышь - покажет число"),
                 new Item("load", Color.FromArgb(14, 136, 232), "Отправить баг", "Кнопка на главной, без личных данных"),
@@ -622,7 +775,7 @@ namespace ZapretTray
             { Welcome, new[] {
                 new Item("power", Color.FromArgb(46, 160, 67), "Всё уже работает", "Программа сама подобрала настройки"),
                 new Item("ping", Color.FromArgb(142, 84, 233), "Плитки на главной", "Галочка - открывается. Нажми плитку - проверит заново"),
-                new Item("games", Color.FromArgb(230, 126, 34), "Мои игры", "Добавь игру - обход включится и для неё"),
+                new Item("games", Color.FromArgb(230, 126, 34), "Мои приложения", "Добавь приложение - обход включится и для него"),
                 new Item("load", Color.FromArgb(14, 136, 232), "Что-то не так?", "«Отправить баг» - и разработчик посмотрит") } },
         };
 

@@ -17,7 +17,7 @@ namespace ZapretTray
     static class AppInfo
     {
         public const string Name = "Zapret Tray";
-        public const string Version = "0.7";
+        public const string Version = "0.8";
         public const string RunTask = "ZapretTray";
         public const string AutoTask = "ZapretTray Autostart";
         public const string TrayExe = "ZapretTray.exe";
@@ -37,6 +37,7 @@ namespace ZapretTray
         public string Lists { get { return Path.Combine(Core, "lists"); } }
         public string Utils { get { return Path.Combine(Core, "utils"); } }
         public string GamesDir { get { return Path.Combine(Lists, "games"); } }
+        public string IconsDir { get { return Path.Combine(GamesDir, "icons"); } }
 
         public string BestConfig { get { return Path.Combine(Utils, "best_config.txt"); } }
         public string Settings { get { return Path.Combine(Utils, "tray.ini"); } }

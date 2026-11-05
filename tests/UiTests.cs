@@ -62,7 +62,7 @@ static class T{
  // Длинный список конфигов
  p.Tap(side(3));p.Tap(new Point(760,62+30));var c1=p.Shot();c1.Save(mode+"_cfg0.png");p.Wheel(-1500);var c2=p.Shot();c2.Save(mode+"_cfg1.png");var dc=Diff(c1,c2);Ok(dc.Top>=62-1,mode+" список конфигов: шапка на месте "+dc);
  // Подсказки: прокрутки нет
- p.Tap(side(5));for(int i=0;i<3;i++){hv.Page=i;var s1=p.Shot();p.Wheel(-1000);var s2=p.Shot();Ok(Diff(s1,s2).IsEmpty,mode+" подсказки вкладка "+i+": колесо ничего не двигает");s2.Save(mode+"_hint"+i+".png");}
+ p.Tap(side(5));for(int i=0;i<3;i++){hv.Page=i;var until=DateTime.Now.AddMilliseconds(600);while(DateTime.Now<until){Application.DoEvents();System.Threading.Thread.Sleep(15);}/* шаги подсказки выезжают с анимацией: ждём, пока встанут */var s1=p.Shot();p.Wheel(-1000);var s2=p.Shot();Ok(Diff(s1,s2).IsEmpty,mode+" подсказки вкладка "+i+": колесо ничего не двигает");s2.Save(mode+"_hint"+i+".png");}
  // Отключённое и обычные действия
  p.Tap(side(3));clicks.Clear();p.Shot();p.Tap(new Point(210+40,62+62+12+30));
  Ok(clicks.Count==0||!clicks.Contains("undo"),mode+" отключённый пункт не нажимается");

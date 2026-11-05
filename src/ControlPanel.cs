@@ -279,6 +279,15 @@ namespace ZapretTray
             if (Visible) lastPosition = Location;
         }
 
+        // Кнопка в подсказке: открыть раздел по названию из колонки слева. "Главная" - главная страница
+        public bool OpenByName(string name)
+        {
+            if (name == "Главная") { OpenSection(null); Invalidate(); return true; }
+            foreach (var s in sections)
+                if (s.Text.TrimEnd('.') == name) { OpenSection(s); Invalidate(); return true; }
+            return false;
+        }
+
         // Для проверки без значка: какой раздел показать
         public void OpenSection(ToolStripMenuItem section)
         {
@@ -381,8 +390,20 @@ namespace ZapretTray
                 return;
             }
             var hit = HitTest(L(e.Location));
-            // Над плиткой с графиком перерисовываем и без смены наведения: подпись едет за мышью
-            if (Equals(hit, hover) && CurrentView == null && !(hit is string && ((string)hit).StartsWith("tile"))) return;
+            // Мышь ходит по той же плитке: перерисовываем только её и только когда подпись графика перескочила на другую точку.
+            // Перерисовка всего окна на каждое движение мыши - заметные рывки
+            if (Equals(hit, hover) && CurrentView == null)
+            {
+                var name = hit as string;
+                if (name == null || !name.StartsWith("tile")) return;
+                int tile = name[4] - '0', hot = GraphHot(tile);
+                if (hot == graphHot) return;
+                graphHot = hot;
+                Invalidate(Dev(tileRects[tile]));
+                return;
+            }
+            var tileName = hit as string;
+            graphHot = tileName != null && tileName.StartsWith("tile") ? GraphHot(tileName[4] - '0') : -1;
             hover = hit;
             var item = hit as ToolStripMenuItem;
             Cursor = hit != null && (item == null || item.Enabled) ? Cursors.Hand : Cursors.Default;
@@ -474,18 +495,23 @@ namespace ZapretTray
             return Color.FromArgb(a.A, (int)(a.R + (b.R - a.R) * part), (int)(a.G + (b.G - a.G) * part), (int)(a.B + (b.B - a.B) * part));
         }
 
-        static Bitmap backdrop;
-        static Palette backdropTheme;
+        Bitmap backdrop;
+        Palette backdropTheme;
+        float backdropScale;
 
-        // Фон окна: тёмный, с едва заметным свечением в углу. Рисуем один раз, шапка берёт отсюда же свой кусок
+        // Фон окна: тёмный, с едва заметным свечением в углу. Рисуем один раз сразу в размер окна на экране:
+        // растягивать маленькую картинку на каждой перерисовке - это 100 мс при 150% и рывки под мышью
         Bitmap Backdrop()
         {
-            if (backdrop != null && backdropTheme == P && backdrop.Width == LW && backdrop.Height == LH) return backdrop;
+            var size = ClientSize;
+            if (backdrop != null && backdropTheme == P && backdropScale == UiScale && backdrop.Size == size) return backdrop;
             if (backdrop != null) backdrop.Dispose();
-            backdrop = new Bitmap(LW, LH);
+            backdrop = new Bitmap(size.Width, size.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
             backdropTheme = P;
+            backdropScale = UiScale;
             using (var g = Graphics.FromImage(backdrop))
             {
+                g.ScaleTransform(UiScale, UiScale);
                 g.Clear(P.Back);
                 Glow(g, new Rectangle(LW - 360, -300, 720, 600), P.Check, 42);
                 Glow(g, new Rectangle(SideWidth - 240, LH - 220, 560, 440), P.Accent2, 24);
@@ -624,8 +650,9 @@ namespace ZapretTray
             if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
+            // Фон точка в точку, только нужный кусок. Тема могла смениться, пока окно открыто - Backdrop() это заметит
+            g.DrawImage(Backdrop(), e.ClipRectangle, e.ClipRectangle, GraphicsUnit.Pixel);
             g.ScaleTransform(UiScale, UiScale);   // дальше всё рисуется в точках масштаба 100%
-            g.DrawImage(Backdrop(), 0, 0, LW, LH);   // тема могла смениться, пока окно открыто
             DrawSidebar(g);
             if (path.Count == 0) DrawHome(g);
             else if (CurrentView != null) DrawView(g);
@@ -736,6 +763,7 @@ namespace ZapretTray
                 int rest = h - Gap, servicesHeight = rest * 11 / 20, numbersHeight = rest - servicesHeight;
                 DrawNumbers(g, x, top, w, numbersHeight);
                 DrawServices(g, x, top + numbersHeight + Gap, w, servicesHeight);
+                if (graphLabel != null) { graphLabel(); graphLabel = null; }
             }
             else
                 DrawOffStatus(g, x, top, w, h);
@@ -863,14 +891,53 @@ namespace ZapretTray
 
         static readonly Image ArcIcon = LoadIcon("arc.png"), WardogsIcon = LoadIcon("wardogs.png");
 
+        // Иконки добавленных приложений: ключ - имя процесса, картинка - из его exe. Заполняет Tray из папки icons
+        static readonly Dictionary<string, Image> AppPics = new Dictionary<string, Image>(StringComparer.OrdinalIgnoreCase);
+
+        // Загрузить/обновить иконки приложений из папки (png называются по имени процесса).
+        // Читаем через копию, чтобы не держать файл открытым
+        public static void LoadAppPics(string dir)
+        {
+            foreach (var img in AppPics.Values) try { img.Dispose(); } catch { }
+            AppPics.Clear();
+            if (dir == null || !System.IO.Directory.Exists(dir)) return;
+            foreach (var f in System.IO.Directory.GetFiles(dir, "*.png"))
+            {
+                try { using (var tmp = Image.FromFile(f)) AppPics[System.IO.Path.GetFileNameWithoutExtension(f)] = new Bitmap(tmp); }
+                catch { }
+            }
+        }
+
         // Значок и название по имени процесса. Значка нет - остаётся джойстик
         static void GameLook(string exe, out Image icon, out string name)
         {
             icon = null;
             name = exe;
-            var key = exe.Replace(" ", "");   // в списке игра называется "ARC Raiders", а процесс без пробела
+            // В меню строка игры - "exe   (адресов: N)": для сравнения берём только начало
+            var clean = exe;
+            int par = clean.IndexOf('(');
+            if (par > 0) clean = clean.Substring(0, par).Trim();
+            var key = clean.Replace(" ", "");   // в списке игра называется "ARC Raiders", а процесс без пробела
             if (key.IndexOf("wardogs", StringComparison.OrdinalIgnoreCase) >= 0) { icon = WardogsIcon; name = "Wardogs"; }
             else if (key.IndexOf("arcraiders", StringComparison.OrdinalIgnoreCase) >= 0 || key.IndexOf("pioneergame", StringComparison.OrdinalIgnoreCase) >= 0) { icon = ArcIcon; name = "ARC Raiders"; }
+            else { Image pic; if (AppPics.TryGetValue(clean, out pic)) { icon = pic; name = clean; } }
+        }
+
+        // Кружок с вопросом. Знак рисуем линиями: буква "?" шрифтом стоит не по центру кружка и при увеличении это видно
+        static void DrawHelpMark(Graphics g, Rectangle r, Color color)
+        {
+            float cx = r.Left + r.Width / 2f, cy = r.Top + r.Height / 2f;
+            using (var pen = new Pen(color, 1.3f)) g.DrawEllipse(pen, cx - 8.5f, cy - 8.5f, 17, 17);
+            using (var pen = new Pen(color, 1.5f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+            using (var path = new GraphicsPath())
+            {
+                // Крючок: дуга сверху, вниз к середине, короткая ножка
+                path.AddArc(cx - 2.8f, cy - 5.3f, 5.6f, 5.2f, 190, 250);
+                path.AddLine(cx + 0.9f, cy - 0.6f, cx, cy + 0.4f);
+                path.AddLine(cx, cy + 0.4f, cx, cy + 1.6f);
+                g.DrawPath(pen, path);
+            }
+            using (var b = new SolidBrush(color)) g.FillEllipse(b, cx - 1f, cy + 3.3f, 2f, 2f);
         }
 
         // Пояснение рисуем последним, поверх плиток
@@ -887,7 +954,7 @@ namespace ZapretTray
             TextRenderer.DrawText(g, text, MenuKit.Font, new Rectangle(box.Left + padX, box.Top + padY, size.Width, size.Height), P.Text, flags);
         }
 
-        static readonly string[] ServiceNames = { "YouTube", "Discord", "Игры", "Мои сайты" };
+        static readonly string[] ServiceNames = { "YouTube", "Discord", "Приложения", "Мои сайты" };
         static readonly Color[] ServiceColors = { Color.FromArgb(230, 33, 23), Color.FromArgb(88, 101, 242), Color.FromArgb(240, 136, 30), Color.FromArgb(14, 136, 232) };
         static readonly Color[] NumberColors = { Color.FromArgb(18, 165, 148), Color.FromArgb(142, 84, 233), Color.FromArgb(222, 70, 128) };
 
@@ -975,9 +1042,7 @@ namespace ZapretTray
                 if (i == 2)
                 {
                     gameHelp = new Rectangle(left + tile - 30, y + 8, 22, 22);
-                    using (var pen = new Pen(Equals(hover, "help") ? P.SubText : P.Disabled, 1.3f)) g.DrawEllipse(pen, gameHelp.Left + 2, gameHelp.Top + 2, 17, 17);
-                    TextRenderer.DrawText(g, "?", MenuKit.Small, gameHelp, Equals(hover, "help") ? P.SubText : P.Disabled,
-                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+                    DrawHelpMark(g, gameHelp, Equals(hover, "help") ? P.SubText : P.Disabled);
                 }
             }
         }
@@ -1068,6 +1133,21 @@ namespace ZapretTray
         public Func<int, long[]> TileHistory;
         public Func<int, DateTime[]> TileTimes;   // когда сделан каждый замер (UTC)
 
+        // Где график нарисован в прошлый раз: по ним мышь узнаёт точку под собой, не перерисовывая окно
+        readonly Rectangle[] graphArea = new Rectangle[6];
+        readonly int[] graphPoints = new int[6];
+        int graphHot = -1;   // плитка * 1000 + точка под мышью, -1 - нет
+        Action graphLabel;   // подпись над графиком под мышью, рисуется последней
+
+        int GraphHot(int tile)
+        {
+            if (tile < 0 || tile >= graphArea.Length || graphPoints[tile] < 2) return -1;
+            var area = graphArea[tile];
+            float step = (float)area.Width / Math.Max(1, graphPoints[tile] - 1);
+            if (mouse.X < area.Left - step / 2 || mouse.X > area.Right + step / 2 || mouse.Y < area.Top - 30 || mouse.Y > tileRects[tile].Bottom) return -1;
+            return tile * 1000 + Math.Max(0, Math.Min(graphPoints[tile] - 1, (int)Math.Round((mouse.X - area.Left) / step)));
+        }
+
         // Волна за последний час. Замеры усредняем кусками (за час - по 10 штук, 100 секунд), иначе 360 точек на 180 пикселях - сплошной шум.
         // Мало замеров (только запустили) - без усреднения, чтобы график появился почти сразу. Кусок, где ничего не ответило, - разрыв.
         // floor - низ шкалы сверху: ровный пинг 10 мс не должен выглядеть горами. Мышь над плиткой - точка и подпись с числом.
@@ -1089,7 +1169,10 @@ namespace ZapretTray
                 points.Add(count > 0 ? sum / count : -1);
                 pointTimes.Add(times != null && times.Length == history.Length ? times[end - 1] : DateTime.UtcNow);
             }
+            graphPoints[tile] = 0;
             if (System.Linq.Enumerable.Count(points, v => v >= 0) < 2) return false;
+            graphArea[tile] = area;
+            graphPoints[tile] = points.Count;
             double top = Math.Max(floor, System.Linq.Enumerable.Max(points) * 1.15);
             float step = (float)area.Width / Math.Max(1, points.Count - 1);
             Func<int, PointF> at = k => new PointF(area.Left + k * step, area.Bottom - (float)(Math.Min(points[k], top) / top * area.Height));
@@ -1131,7 +1214,13 @@ namespace ZapretTray
                 using (var b = new SolidBrush(color)) g.FillEllipse(b, p.X - 3, p.Y - 3, 6, 6);
             }
             g.Restore(state);
-            if (hot >= 0) DrawGraphLabel(g, card, area, at(hot).X, GraphValue(tile, points[hot]) + " · " + Ago(pointTimes[hot]));
+            // Подпись - после всех плиток, иначе текст плитки ляжет поверх неё
+            if (hot >= 0)
+            {
+                float x = at(hot).X;
+                string text = GraphValue(tile, points[hot]) + " · " + Ago(pointTimes[hot]);
+                graphLabel = () => DrawGraphLabel(g, card, area, x, text);
+            }
             return true;
         }
 
@@ -1197,8 +1286,11 @@ namespace ZapretTray
         // Поэтому шапку рисуем после содержимого, поверх него
         void CoverHeader(Graphics g, Rectangle area)
         {
-            var top = new Rectangle(SideWidth, 0, LW - SideWidth, area.Top);
+            var top = Rectangle.Intersect(Dev(new Rectangle(SideWidth, 0, LW - SideWidth, area.Top)), ClientRectangle);
+            var state = g.Save();
+            g.ResetTransform();
             g.DrawImage(Backdrop(), top, top, GraphicsUnit.Pixel);
+            g.Restore(state);
         }
 
         void DrawScrollBar(Graphics g, Rectangle area)
@@ -1331,8 +1423,10 @@ namespace ZapretTray
                 TextRenderer.DrawText(g, text, cardFont, new Rectangle(textLeft, r.Top, textWidth, r.Height), color, Line);
             else
             {
-                TextRenderer.DrawText(g, text, cardFont, new Rectangle(textLeft, r.Top + 10, textWidth, 22), color, Line);
-                TextRenderer.DrawText(g, note, MenuKit.Small, new Rectangle(textLeft, r.Top + 31, textWidth, 20), P.SubText, Line);
+                // Две строки по центру карточки, как и значок: на главной карточки выше обычных, и текст у верха смотрелся криво
+                int top = r.Top + (r.Height - 42) / 2;
+                TextRenderer.DrawText(g, text, cardFont, new Rectangle(textLeft, top, textWidth, 22), color, Line);
+                TextRenderer.DrawText(g, note, MenuKit.Small, new Rectangle(textLeft, top + 21, textWidth, 20), P.SubText, Line);
             }
         }
 
