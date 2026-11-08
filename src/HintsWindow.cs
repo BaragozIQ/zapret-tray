@@ -49,7 +49,7 @@ namespace ZapretTray
                 "Подключение", "Вернуть DNS как было"),
             new Hint("shield", Slate, "Включён VPN", "С VPN плитки на главной показывают сеть VPN, а не работу zapret.",
                 "Выключи VPN"),
-            new Hint("load", Red, "Ничего не понятно", "Отчёт сам уйдёт разработчику. Твоих личных данных в нём нет.",
+            new Hint("load", Red, "Ничего не понятно", "Отчёт сам уйдёт разработчику. Твоих личных данных в нём нет. Хочешь ответ — впиши ник и как с тобой связаться.",
                 "Главная", "Отправить баг")
         };
 
@@ -849,22 +849,43 @@ namespace ZapretTray
     // Окно "Отправить баг" в стиле главного окна: без рамки Windows, своё поле и кнопки
     class BugDialog : Form
     {
-        const int W = 460, H = 340, Pad = 20;
+        const int W = 460, H = 476, Pad = 20;
         static readonly Font TitleFont = new Font("Segoe UI Semibold", 13f);
         readonly CueBox box = new CueBox { Multiline = true, BorderStyle = BorderStyle.None, ScrollBars = ScrollBars.None, Font = MenuKit.Font, MaxLength = 1500, CueAtTop = true, HideCueOnFocus = true,
             Cue = "Что не так? Например: YouTube не грузит видео, Discord отваливается.\nМожно оставить пустым." };
-        readonly Rectangle field = new Rectangle(Pad, 78, W - Pad * 2, 118);
+        // Ник и контакт - по желанию: только чтобы разработчик понял, кто это, и мог ответить. Программа запоминает их
+        readonly CueBox nickBox = new CueBox { BorderStyle = BorderStyle.None, Font = MenuKit.Font, MaxLength = 32, HideCueOnFocus = true, Cue = "Например, Саня" };
+        readonly CueBox contactBox = new CueBox { BorderStyle = BorderStyle.None, Font = MenuKit.Font, MaxLength = 64, HideCueOnFocus = true, Cue = "Telegram или Discord" };
+        readonly Rectangle field = new Rectangle(Pad, 78, W - Pad * 2, 108);
+        readonly Rectangle nickField = new Rectangle(Pad, 236, (W - Pad * 2 - 10) / 2, 36);
+        readonly Rectangle contactField = new Rectangle(Pad + (W - Pad * 2 - 10) / 2 + 10, 236, (W - Pad * 2 - 10) / 2, 36);
+        readonly Rectangle copyButton = new Rectangle(W - Pad - 110, 284, 110, 28);
         readonly Rectangle sendButton = new Rectangle(W - Pad - 130, H - Pad - 38, 130, 38);
         readonly Rectangle cancelButton = new Rectangle(W - Pad - 130 - 10 - 100, H - Pad - 38, 100, 38);
         readonly Rectangle closeButton = new Rectangle(W - 44, 10, 34, 28);
+        readonly string machine;
+        bool copied;
         string hover;
 
         static Palette P { get { return Theme.Current; } }
 
         public string Comment { get { return box.Text; } }
+        public string Nick { get { return Clean(nickBox.Text); } }
+        public string Contact { get { return Clean(contactBox.Text); } }
 
-        public BugDialog()
+        // Одна строка без лишнего: в сообщение для Discord уходит как есть
+        public static string Clean(string s)
         {
+            s = System.Text.RegularExpressions.Regex.Replace(s ?? "", @"[\r\n\t`*_~|>]+", " ");
+            s = System.Text.RegularExpressions.Regex.Replace(s, @"\s+", " ").Trim();
+            return s.Length > 64 ? s.Substring(0, 64) : s;
+        }
+
+        public BugDialog() : this(null, "", "") { }
+
+        public BugDialog(string machine, string nick, string contact)
+        {
+            this.machine = machine;
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.CenterScreen;
             ShowInTaskbar = false;
@@ -885,6 +906,18 @@ namespace ZapretTray
             box.LostFocus += (s, e) => Invalidate();
             box.TextChanged += (s, e) => Invalidate(new Rectangle(0, field.Bottom, W, 30));
             Controls.Add(box);
+            foreach (var t in new[] { Tuple.Create(nickBox, nickField, nick), Tuple.Create(contactBox, contactField, contact) })
+            {
+                var b = t.Item1;
+                b.BackColor = fill;
+                b.ForeColor = P.Text;
+                b.CueColor = P.SubText;
+                b.Text = t.Item3 ?? "";
+                b.SetBounds(t.Item2.Left + 12, t.Item2.Top + (t.Item2.Height - b.PreferredHeight) / 2, t.Item2.Width - 24, b.PreferredHeight);
+                b.GotFocus += (s, e) => Invalidate();
+                b.LostFocus += (s, e) => Invalidate();
+                Controls.Add(b);
+            }
             KeyDown += (s, e) =>
             {
                 if (e.KeyCode == Keys.Escape) Finish(DialogResult.Cancel);
@@ -932,9 +965,30 @@ namespace ZapretTray
             using (var pen = new Pen(box.Focused ? P.Check : P.Separator)) g.DrawPath(pen, path);
             TextRenderer.DrawText(g, box.TextLength + " / " + box.MaxLength, MenuKit.Small, new Rectangle(field.Right - 120, field.Bottom + 4, 120, 20), P.Disabled,
                 TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+
+            // Ник и контакт: по желанию, чтобы разработчик понял, кто это, и мог ответить
+            TextRenderer.DrawText(g, "Ник, по желанию", MenuKit.Small, new Rectangle(nickField.Left + 2, nickField.Top - 22, nickField.Width, 20), P.SubText, Line);
+            TextRenderer.DrawText(g, "Как с тобой связаться, по желанию", MenuKit.Small, new Rectangle(contactField.Left + 2, contactField.Top - 22, contactField.Width, 20), P.SubText, Line);
+            foreach (var t in new[] { Tuple.Create(nickField, nickBox), Tuple.Create(contactField, contactBox) })
+            {
+                ControlPanel.Box(g, t.Item1, box.BackColor, 9);
+                using (var path = ThemedRenderer.RoundRect(t.Item1, 9))
+                using (var pen = new Pen(t.Item2.Focused ? P.Check : P.Separator)) g.DrawPath(pen, path);
+            }
+
+            // Номер компьютера: человек может сказать его разработчику, и тот будет знать, чьи это отчёты
+            if (machine != null)
+            {
+                TextRenderer.DrawText(g, "Твой номер: " + machine, MenuKit.Bold, new Rectangle(Pad, copyButton.Top, copyButton.Left - Pad - 8, copyButton.Height), P.Text, Line);
+                ControlPanel.Card(g, copyButton, hover == "copy" ? P.Hover : P.Card, 8);
+                TextRenderer.DrawText(g, copied ? "Скопирован ✓" : "Скопировать", MenuKit.Small, copyButton, copied ? Theme.On : P.Text,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+            }
+
             // Правило программы: никаких личных данных. Пишем прямо, что уйдёт и чего не будет
-            TextRenderer.DrawText(g, "Твоих личных данных в отчёте нет", MenuKit.Bold, new Rectangle(Pad, field.Bottom + 6, 300, 20), Theme.On, Line);
-            TextRenderer.DrawText(g, "В любом случае уйдёт технический отчёт: что открылось, настройки и журнал программы.", MenuKit.Small, new Rectangle(Pad, field.Bottom + 28, W - Pad * 2, 40), P.SubText,
+            int ty = copyButton.Bottom + 12;
+            TextRenderer.DrawText(g, "Твоих личных данных в отчёте нет", MenuKit.Bold, new Rectangle(Pad, ty, 300, 20), Theme.On, Line);
+            TextRenderer.DrawText(g, "Уйдёт технический отчёт: что открылось, настройки и журнал программы. Ник и контакт — только если впишешь сам.", MenuKit.Small, new Rectangle(Pad, ty + 22, W - Pad * 2, 40), P.SubText,
                 TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak);
 
             const TextFormatFlags Center = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
@@ -951,6 +1005,7 @@ namespace ZapretTray
             if (sendButton.Contains(p)) return "send";
             if (cancelButton.Contains(p)) return "cancel";
             if (closeButton.Contains(p)) return "close";
+            if (machine != null && copyButton.Contains(p)) return "copy";
             return null;
         }
 
@@ -958,7 +1013,7 @@ namespace ZapretTray
         {
             base.OnMouseMove(e);
             var hit = HitTest(e.Location);
-            if (field.Contains(e.Location)) Cursor = Cursors.IBeam;
+            if (field.Contains(e.Location) || nickField.Contains(e.Location) || contactField.Contains(e.Location)) Cursor = Cursors.IBeam;
             else Cursor = hit != null ? Cursors.Hand : Cursors.Default;
             if (hit == hover) return;
             hover = hit;
@@ -980,12 +1035,19 @@ namespace ZapretTray
             base.OnMouseDown(e);
             if (e.Button != MouseButtons.Left) return;
             if (field.Contains(e.Location)) { box.Focus(); return; }
+            if (nickField.Contains(e.Location)) { nickBox.Focus(); return; }
+            if (contactField.Contains(e.Location)) { contactBox.Focus(); return; }
             // Нажал мимо поля - поле теряет фокус, и пустому возвращается подсказка
             ActiveControl = null;
             Invalidate();
             var hit = HitTest(e.Location);
             if (hit == "send") Finish(DialogResult.OK);
             else if (hit == "cancel" || hit == "close") Finish(DialogResult.Cancel);
+            else if (hit == "copy")
+            {
+                try { Clipboard.SetText(machine); copied = true; } catch { }
+                Invalidate();
+            }
             else
             {
                 // Тащим окно за любое пустое место

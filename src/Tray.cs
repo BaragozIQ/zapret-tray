@@ -322,6 +322,7 @@ namespace ZapretTray
                 MenuKit.Sep("Перенос настроек"),
                 MenuKit.Icon(Item("Сохранить настройки...", (s, e) => SaveSettings()), "save", "В файл, чтобы взять на другой компьютер"),
                 MenuKit.Icon(Item("Подгрузить настройки...", (s, e) => LoadSettings()), "load", "Взять из сохранённого файла"), MenuKit.Sep("Программа"),
+                MenuKit.Icon(Item("Твой номер: " + BugReport.MachineId(settings), (s, e) => CopyMachineId()), "report", "Нажми, чтобы скопировать. По нему видно, чей баг"),
                 MenuKit.Icon(Item("Открыть папку", (s, e) => Process.Start("explorer.exe", "\"" + paths.Root + "\"")), "folder", "Файлы и журнал программы"),
                 MenuKit.Icon(Item("Удалить программу...", (s, e) => Uninstall()), "trash", "Сначала спросит подтверждение")
             });
@@ -1780,7 +1781,7 @@ namespace ZapretTray
         {
             var comment = AskBugComment();
             if (comment == null) return;
-            var who = "ПК " + BugReport.MachineId(settings);
+            var who = BugAuthor(BugReport.MachineId(settings), BugDialog.Clean(settings.Get("nick")), BugDialog.Clean(settings.Get("contact")));
             bugItem.Enabled = false;
             Notify("Проверяю всё и отправляю отчёт, это до минуты...", ToolTipIcon.Info, true);
             var status = StatusText();
@@ -1816,10 +1817,35 @@ namespace ZapretTray
             }));
         }
 
-        // null - передумал
+        // null - передумал. Ник и контакт запоминаем: в следующий раз вписывать заново не нужно
         string AskBugComment()
         {
-            using (var d = new BugDialog()) return d.ShowDialog() == DialogResult.OK ? d.Comment : null;
+            using (var d = new BugDialog(BugReport.MachineId(settings), settings.Get("nick"), settings.Get("contact")))
+            {
+                if (d.ShowDialog() != DialogResult.OK) return null;
+                settings.Set("nick", d.Nick.Length > 0 ? d.Nick : null);
+                settings.Set("contact", d.Contact.Length > 0 ? d.Contact : null);
+                return d.Comment;
+            }
+        }
+
+        void CopyMachineId()
+        {
+            try
+            {
+                Clipboard.SetText(BugReport.MachineId(settings));
+                Notify("Номер скопирован. Отправь его разработчику, чтобы он знал, чьи это отчёты.", ToolTipIcon.Info, true);
+            }
+            catch { Notify("Не удалось скопировать: буфер обмена занят. Номер: " + BugReport.MachineId(settings), ToolTipIcon.Warning); }
+        }
+
+        // Подпись отчёта: номер компьютера, а ник и контакт - если человек их вписал
+        static string BugAuthor(string machine, string nick, string contact)
+        {
+            var who = "ПК " + machine;
+            if (!string.IsNullOrEmpty(nick)) who += " · " + nick;
+            if (!string.IsNullOrEmpty(contact)) who += " · связь: " + contact;
+            return who;
         }
 
         static readonly Regex ConfigName = new Regex(@"^general.*\.bat$", RegexOptions.IgnoreCase);

@@ -91,6 +91,11 @@ static class U{
  // Игры «напрямую» (WARDOGS: от подделок хрипел голос): их сервера исключены из игровых правил, а 80/443 по-прежнему через обход
  static void Direct(string zip){
   using(var d=new GameModeDialog("WardogsClient-Win64-Shipping")){Ok(d.Direct&&!d.DontAsk,"окно новой игры: по умолчанию голос и матч напрямую");Ok(d.Text=="Wardogs добавлена"&&typeof(GameModeDialog).GetField("icon",BindingFlags.NonPublic|BindingFlags.Instance).GetValue(d)!=null,"окно новой игры: значок и имя самой игры");}
+  Ok(BugDialog.Clean("  Саня\n**жирный** `код` @everyone  ")=="Саня жирный код @everyone"&&BugDialog.Clean(new string('x',200)).Length==64&&BugDialog.Clean(null)=="","баг: ник и контакт - одна строка без разметки Discord, не длиннее 64");
+  Func<string,string,string,string> Who=(a,b,c)=>(string)typeof(TrayContext).GetMethod("BugAuthor",BindingFlags.NonPublic|BindingFlags.Static).Invoke(null,new object[]{a,b,c});
+  Ok(Who("1111-2222-3333","","")=="ПК 1111-2222-3333"&&Who("1111-2222-3333","Саня","@sanya")=="ПК 1111-2222-3333 · Саня · связь: @sanya"&&Who("1111-2222-3333","","@sanya")=="ПК 1111-2222-3333 · связь: @sanya","баг: подпись - номер, ник и контакт, если вписаны");
+  Ok(BugReport.Payload("x @everyone").Contains("\"allowed_mentions\":{\"parse\":[]}"),"баг: упоминания в Discord отключены (@everyone никого не позовёт)");
+  using(var d=new BugDialog("1111-2222-3333","Саня","@sanya")){Ok(d.Nick=="Саня"&&d.Contact=="@sanya","баг: окно подставляет запомненные ник и контакт");}
   using(var d=new GameModeDialog("unknown-app")){Ok(d.Text=="unknown-app добавлена","окно новой игры: незнакомое приложение - по имени процесса");}
   var raw=System.Text.Encoding.GetEncoding(28591);
   const string bat="start \"zapret: %~n0\" /b \"%BIN%winws.exe\" --wf-tcp=80,443,%GameFilterTCP% ^\r\n--filter-tcp=80,443 --ipset=\"%LISTS%ipset-all.txt\" --new ^\r\n--filter-tcp=%GameFilterTCP% --ipset=\"%LISTS%ipset-all.txt\" --dpi-desync=fake --new ^\r\n--filter-udp=%GameFilterUDP% --ipset=\"%LISTS%ipset-all.txt\" --dpi-desync=fake\r\n";
