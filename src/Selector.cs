@@ -32,7 +32,16 @@ namespace ZapretTray
             public string File;
             public int ReqOk;   // сколько обязательных открылось
             public int OptOk;   // сколько необязательных открылось
+            public int ReqAll;  // сколько обязательных можно было открыть: имена, которых нет вообще, не в счёт
             public double Time;
+        }
+
+        // Имени нет совсем (даже защищённый DNS не нашёл) - никакой конфиг его не откроет, ждать его нечего.
+        // Если так у всех - это нет интернета, тогда считаем как обычно
+        static bool Countable(List<SiteResult> res, int i)
+        {
+            if (res[i].Status != SiteStatus.NoDns) return true;
+            return res.All(r => r.Status == SiteStatus.NoDns);
         }
 
         // best=false: прошлый удачный конфиг, иначе первый, где всё работает.
@@ -104,7 +113,7 @@ namespace ZapretTray
                 m.File = file;
                 scores.Add(m);
                 // Быстрый режим: первый, где открылись все обязательные. Случайную удачу отсеивает вторая проверка
-                if (!best && m.ReqOk == reqCount)
+                if (!best && m.ReqOk == m.ReqAll)
                 {
                     if (AllRequiredOpenAfterPause(urls, required, Path.GetFileName(file))) break;
                     m.ReqOk--;
@@ -118,11 +127,12 @@ namespace ZapretTray
             // Больше обязательных - лучше; при равенстве больше необязательных, потом меньше пинг
             var top = scores.OrderByDescending(s => s.ReqOk).ThenByDescending(s => s.OptOk).ThenBy(s => s.Time).ToList();
             var winner = top[0];
-            Logger.Write("подбор: выбран " + Path.GetFileName(winner.File) + ", обязательных открылось " + winner.ReqOk + " из " + reqCount);
+            Logger.Write("подбор: выбран " + Path.GetFileName(winner.File) + ", обязательных открылось " + winner.ReqOk + " из " + winner.ReqAll
+                         + (winner.ReqAll < reqCount ? " (" + (reqCount - winner.ReqAll) + " без адреса - не в счёт)" : ""));
             if (winner.ReqOk == 0 && winner.OptOk == 0) { error = "ни один сайт не открылся ни на одном конфиге - похоже, нет интернета"; return false; }
 
             // Запоминаем до 3 конфигов, где открылись все обязательные (или хотя бы лучший) - запасные для быстрого режима
-            var keep = top.Where(s => s.ReqOk == reqCount).Take(3).ToList();
+            var keep = top.Where(s => s.ReqOk == s.ReqAll).Take(3).ToList();
             if (keep.Count == 0) keep.Add(winner);
             Util.WriteLinesAtomic(paths.BestConfig, keep.Select(s => Path.GetFileName(s.File)));
 
@@ -132,6 +142,10 @@ namespace ZapretTray
             return true;
         }
 
+        // Доп. параметры winws от программы (например, --wf-iface при VPN-туннеле). Спрашиваем при каждом запуске
+        public static Func<string> WinwsExtra = () => "";
+        public static string LastExtra = "";   // с чем запущен winws сейчас
+
         public static void StartConfig(AppPaths paths, string bat)
         {
             var psi = new ProcessStartInfo("cmd.exe", "/c \"\"" + bat + "\"\"")
@@ -139,6 +153,13 @@ namespace ZapretTray
                 WorkingDirectory = paths.Core, UseShellExecute = false, CreateNoWindow = true
             };
             psi.EnvironmentVariables["NO_UPDATE_CHECK"] = "1";
+            string extra;
+            try { extra = WinwsExtra() ?? ""; } catch { extra = ""; }
+            // Только наши --ключи без символов cmd: значение подставляется прямо в строку батника
+            if (!System.Text.RegularExpressions.Regex.IsMatch(extra, @"^(--[\w-]+=[\w.,-]+( |$))*$")) extra = "";
+            LastExtra = extra.Trim();
+            if (LastExtra.Length > 0) psi.EnvironmentVariables["TrayWinws"] = LastExtra;
+            else psi.EnvironmentVariables.Remove("TrayWinws");
             // Конфиги зовут "call service.bat" из текущей папки. С этой переменной cmd текущую папку не ищет,
             // service.bat не находится, и winws падает с "bad value for --wf-tcp"
             psi.EnvironmentVariables.Remove("NoDefaultCurrentDirectoryInExePath");
@@ -173,13 +194,14 @@ namespace ZapretTray
         }
 
         // Считаем, сколько обязательных и необязательных открылось, и средний пинг по открывшимся
-        static void CountOpen(List<SiteResult> res, bool[] required, out int reqOk, out int optOk, out double avgTime)
+        static void CountOpen(List<SiteResult> res, bool[] required, out int reqOk, out int optOk, out int reqAll, out double avgTime)
         {
-            reqOk = optOk = 0;
+            reqOk = optOk = reqAll = 0;
             double sum = 0;
             int opened = 0;
             for (int i = 0; i < res.Count; i++)
             {
+                if (i < required.Length && required[i] && Countable(res, i)) reqAll++;
                 if (!res[i].Opened) continue;
                 if (i < required.Length && required[i]) reqOk++; else optOk++;
                 sum += res[i].TlsMs;
@@ -191,7 +213,7 @@ namespace ZapretTray
         static bool AllRequiredOpen(string[] urls, bool[] required, string config)
         {
             var res = Probe(urls, config);
-            for (int i = 0; i < res.Count; i++) if (i < required.Length && required[i] && !res[i].Opened) return false;
+            for (int i = 0; i < res.Count; i++) if (i < required.Length && required[i] && !res[i].Opened && Countable(res, i)) return false;
             return true;
         }
 
@@ -207,17 +229,19 @@ namespace ZapretTray
             var reqOks = new List<int>();
             var optOks = new List<int>();
             var avgs = new List<double>();
+            int all = 0;
             for (int r = 0; r < rounds; r++)
             {
-                int ro, oo;
+                int ro, oo, ra;
                 double at;
-                CountOpen(Probe(urls, config), required, out ro, out oo, out at);
+                CountOpen(Probe(urls, config), required, out ro, out oo, out ra, out at);
                 reqOks.Add(ro);
                 optOks.Add(oo);
                 avgs.Add(at);
+                all = Math.Max(all, ra);
             }
             avgs.Sort();
-            return new Score { ReqOk = reqOks.Min(), OptOk = optOks.Min(), Time = avgs[avgs.Count / 2] };
+            return new Score { ReqOk = reqOks.Min(), OptOk = optOks.Min(), ReqAll = all, Time = avgs[avgs.Count / 2] };
         }
     }
 }

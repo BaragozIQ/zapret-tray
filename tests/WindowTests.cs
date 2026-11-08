@@ -53,7 +53,7 @@ namespace ZapretTray
 
         [STAThread]
         static void Main()
-        {
+        { ControlPanel.NoAnimation = true;
             SetProcessDPIAware();
             Application.EnableVisualStyles();
             try { Panel(); } catch (Exception ex) { Ok(false, "главное окно: " + ex.GetType().Name + ": " + ex.Message); }
@@ -176,7 +176,9 @@ namespace ZapretTray
             Paint(p);
             var rows = (List<Rectangle>)typeof(HintsView).GetField("rowRects", Hidden).GetValue(hv);
             var selected = (int[])typeof(HintsView).GetField("selected", Hidden).GetValue(hv);
-            Ok(rows.Count == 8, "в списке «Если сломалось» 8 строк");
+            int want = ((Array)typeof(HintsView).GetField("Broken", BindingFlags.NonPublic | BindingFlags.Static).GetValue(null)).Length;
+            Ok(rows.Count == want, "в списке «Если сломалось» все " + want + " строк (видно " + rows.Count + ")");
+            Ok(rows.Count > 0 && rows[rows.Count - 1].Bottom <= p.ClientSize.Height, "последняя подсказка влезает в окно");
             p.Tap(Device(p, rows[3].Left + 40, rows[3].Top + rows[3].Height / 2));
             Ok(selected[0] == 3, "нажал на четвёртую строку - выбрана она");
             p.Tap(Device(p, rows[0].Left + 40, rows[0].Top + rows[0].Height / 2));

@@ -7,7 +7,7 @@ static class U{
  static object Call(Type t,string m,params object[] a){return t.GetMethod(m,BindingFlags.NonPublic|BindingFlags.Static|BindingFlags.Public).Invoke(null,a);}
  static void Entry(string s,string want,bool ip){string v;bool i;bool r=Util.ParseEntry(s,out v,out i);Ok(want==null?!r:(r&&v==want&&i==ip),"ввод сайта '"+s+"' -> "+(r?v:"отказ"));}
  [STAThread]static void Main(string[] a){string zip=a[0];Application.EnableVisualStyles();
-  try{Logic();Sign(zip);Package(zip);Settings();Checks();Hints();Stress();}catch(Exception e){Ok(false,"ТЕСТ УПАЛ: "+e);}
+  try{Logic();Sign(zip);Package(zip);Settings();Checks();Direct(zip);Vpn(zip);Hints();Stress();}catch(Exception e){Ok(false,"ТЕСТ УПАЛ: "+e);}
   File.WriteAllLines("result.txt",log.Concat(new[]{"ИТОГО ok="+pass+" fail="+fail}));}
  static void Logic(){
   Entry("youtube.com","youtube.com",false);Entry("https://YouTube.com/watch?v=1","youtube.com",false);Entry("*.site.org","site.org",false);Entry("site.org:8443","site.org",false);
@@ -52,6 +52,89 @@ static class U{
    Ok(s2.All().Any(c=>c.Url=="https://arcraiders.com"&&c.Required),"проверки: переключение сохранилось");
    Ok(!s2.All().Any(c=>c.Url=="https://id.embark.games"),"проверки: удалённый не вернулся");
   }finally{try{Directory.Delete(dir,true);}catch{}}
+  // Кнопка «Проверить» в «Моих сайтах»: проверка идёт в фоне, «Подобрать» отдаёт адрес сайта
+  string picked=null;
+  Func<string,SiteResult> fake=u=>u.Contains("bad")?new SiteResult{Url=u,Status=SiteStatus.NoConnect,Measured=true,Connected=true,TlsDone=true}:new SiteResult{Url=u,Status=SiteStatus.Ok,Measured=true,Connected=true,TlsDone=true,TlsMs=50};
+  var sv=new SitesView(()=>new List<Tuple<string,string,bool>>(),(x,y)=>{},(x,y)=>{},x=>{},fake,u=>picked=u);
+  var hid=BindingFlags.NonPublic|BindingFlags.Instance;
+  typeof(SitesView).GetMethod("StartCheck",hid).Invoke(sv,new object[]{"good.com"});typeof(SitesView).GetMethod("StartCheck",hid).Invoke(sv,new object[]{"bad.com"});
+  var states=(System.Collections.IDictionary)typeof(SitesView).GetField("states",hid).GetValue(sv);
+  var t0=Environment.TickCount;Func<string,string,object> F=(k,f)=>{var o=states[k];return o==null?null:o.GetType().GetField(f).GetValue(o);};
+  while(Environment.TickCount-t0<3000&&((bool)F("good.com","Busy")||(bool)F("bad.com","Busy")))System.Threading.Thread.Sleep(20);
+  Ok(!(bool)F("good.com","Busy")&&(bool)F("good.com","Opened"),"проверка сайта: открылся");
+  Ok(!(bool)F("bad.com","Busy")&&!(bool)F("bad.com","Opened")&&(string)F("bad.com","Stage")=="соединился, сервер не ответил","проверка сайта: не открылся, видно почему");
+  typeof(SitesView).GetMethod("Pick",hid).Invoke(sv,new object[]{"bad.com"});
+  Ok(picked=="https://bad.com"&&!states.Contains("bad.com"),"«Подобрать» отдаёт адрес сайта и сбрасывает результат");
+ }
+ // Туннель VPN (Clash в режиме TUN): место для --wf-iface в конфигах zapret, чтобы подделки не попадали в туннель
+ static void Vpn(string zip){
+  var raw=System.Text.Encoding.GetEncoding(28591);
+  const string bat="start \"zapret: %~n0\" /b \"%BIN%winws.exe\" --wf-tcp=80,443,%GameFilterTCP% --wf-udp=443,%GameFilterUDP% ^\r\n--filter-udp=443 --wf-udp=1 --dpi-desync=fake\r\n";
+  var p1=ZapretUpdater.PatchIface(bat);
+  Ok(p1.Contains("--wf-udp=443,%GameFilterUDP% %TrayWinws% ^")&&System.Text.RegularExpressions.Regex.Matches(p1,"%TrayWinws%").Count==1,"туннель: место для параметров - сразу после --wf-udp, один раз");
+  Ok(ZapretUpdater.PatchIface(p1)==p1,"туннель: повторная правка ничего не меняет");
+  Ok(ZapretUpdater.UnsafeLine(p1)==null,"туннель: поправленный конфиг проходит проверку безопасности");
+  using(var z=ZipFile.OpenRead(zip)){
+   var bats=z.Entries.Where(e=>e.FullName.Replace('\\','/').StartsWith("files/core/general")&&e.FullName.EndsWith(".bat")).ToList();
+   Ok(bats.Count>=20&&bats.All(e=>{string t;using(var r=new StreamReader(e.Open(),raw))t=r.ReadToEnd();return System.Text.RegularExpressions.Regex.Matches(t,"%TrayWinws%").Count==1&&ZapretUpdater.UnsafeLine(t)==null;}),"туннель: все конфиги в архиве с местом для параметров ("+bats.Count+")");}
+  // Батник: переменная не задана - пусто; задана - подставляется; мусор с символами cmd не проходит
+  var dir=Path.Combine(Path.GetTempPath(),"zt-vpn-"+Guid.NewGuid().ToString("N"));var p=new AppPaths(dir);Directory.CreateDirectory(p.Core);
+  try{
+   var b=Path.Combine(p.Core,"t.bat");File.WriteAllText(b,"@echo off\r\necho [%TrayWinws%]> out.txt\r\n");var outf=Path.Combine(p.Core,"out.txt");
+   Func<string,string> Run=x=>{try{File.Delete(outf);}catch{}Selector.WinwsExtra=()=>x;Selector.StartConfig(p,b);var t0=Environment.TickCount;while(!File.Exists(outf)&&Environment.TickCount-t0<5000)System.Threading.Thread.Sleep(50);System.Threading.Thread.Sleep(100);return File.Exists(outf)?File.ReadAllText(outf).Trim():null;};
+   Ok(Run("")=="[]","туннель: без параметров в батнике пусто");
+   Ok(Run("--wf-iface=10")=="[--wf-iface=10]"&&Selector.LastExtra=="--wf-iface=10","туннель: --wf-iface доходит до winws");
+   Ok(Run("--wf-iface=10 & calc")=="[]"&&Selector.LastExtra=="","туннель: команда cmd в параметрах не проходит");
+   Selector.WinwsExtra=()=>"";
+  }finally{Selector.WinwsExtra=()=>"";try{Directory.Delete(dir,true);}catch{}}
+ }
+ // Игры «напрямую» (WARDOGS: от подделок хрипел голос): их сервера исключены из игровых правил, а 80/443 по-прежнему через обход
+ static void Direct(string zip){
+  using(var d=new GameModeDialog("WardogsClient-Win64-Shipping")){Ok(d.Direct&&!d.DontAsk,"окно новой игры: по умолчанию голос и матч напрямую");Ok(d.Text=="Wardogs добавлена"&&typeof(GameModeDialog).GetField("icon",BindingFlags.NonPublic|BindingFlags.Instance).GetValue(d)!=null,"окно новой игры: значок и имя самой игры");}
+  using(var d=new GameModeDialog("unknown-app")){Ok(d.Text=="unknown-app добавлена","окно новой игры: незнакомое приложение - по имени процесса");}
+  var raw=System.Text.Encoding.GetEncoding(28591);
+  const string bat="start \"zapret: %~n0\" /b \"%BIN%winws.exe\" --wf-tcp=80,443,%GameFilterTCP% ^\r\n--filter-tcp=80,443 --ipset=\"%LISTS%ipset-all.txt\" --new ^\r\n--filter-tcp=%GameFilterTCP% --ipset=\"%LISTS%ipset-all.txt\" --dpi-desync=fake --new ^\r\n--filter-udp=%GameFilterUDP% --ipset=\"%LISTS%ipset-all.txt\" --dpi-desync=fake\r\n";
+  var p1=ZapretUpdater.PatchDirect(bat);
+  Func<string,int> N=s=>System.Text.RegularExpressions.Regex.Matches(s,"tray-ipset-direct\\.txt").Count;
+  Ok(N(p1)==2,"напрямую: исключение вписано в оба игровых правила");
+  Ok(p1.Contains("--filter-tcp=80,443 --ipset")&&!p1.Contains("--filter-tcp=80,443 --ipset-exclude=\"%LISTS%tray-ipset-direct"),"напрямую: правило 80/443 (вход в игру) не тронуто");
+  Ok(ZapretUpdater.PatchDirect(p1)==p1,"напрямую: повторная правка ничего не меняет");
+  Ok(ZapretUpdater.UnsafeLine(p1)==null,"напрямую: поправленный конфиг проходит проверку безопасности");
+  using(var z=ZipFile.OpenRead(zip)){
+   var bats=z.Entries.Where(e=>e.FullName.Replace('\\','/').StartsWith("files/core/general")&&e.FullName.EndsWith(".bat")).ToList();
+   Ok(bats.Count>=20,"напрямую: в архиве все конфиги ("+bats.Count+")");
+   foreach(var e in bats){string t;using(var r=new StreamReader(e.Open(),raw))t=r.ReadToEnd();Ok(N(t)==2&&ZapretUpdater.UnsafeLine(t)==null,"напрямую: конфиг из архива поправлен: "+e.Name);}
+   var ph=z.Entries.FirstOrDefault(e=>e.FullName.Replace('\\','/')=="files/core/lists/tray-ipset-direct.txt");
+   string phText=null;if(ph!=null)using(var r=new StreamReader(ph.Open()))phText=r.ReadToEnd().Trim();
+   Ok(phText==Ipset.Placeholder,"напрямую: в архиве есть непустой список (иначе winws не запустится)");}
+  var dir=Path.Combine(Path.GetTempPath(),"zt-dir-"+Guid.NewGuid().ToString("N"));var p=new AppPaths(dir);Directory.CreateDirectory(p.GamesDir);
+  try{
+   File.WriteAllLines(p.GamesList,new[]{"Wardogs|1|1","Arc|1","Off|0|1"});
+   File.WriteAllLines(Path.Combine(p.GamesDir,"Wardogs.txt"),new[]{"3.3.3.0/24"});File.WriteAllLines(Path.Combine(p.GamesDir,"Arc.txt"),new[]{"4.4.4.0/24"});File.WriteAllLines(Path.Combine(p.GamesDir,"Off.txt"),new[]{"5.5.5.0/24"});
+   var gs=new GameStore(p);
+   Ok(gs.Find("Wardogs").Direct&&!gs.Find("Arc").Direct,"напрямую: режим читается из списка игр");
+   Ok(gs.EnabledSubnets().SequenceEqual(new[]{"4.4.4.0/24"}),"напрямую: адреса такой игры не добавляются в обход");
+   Ok(gs.DirectSubnets().SequenceEqual(new[]{"3.3.3.0/24"}),"напрямую: в исключение - только включённая игра напрямую");
+   gs.SetDirect(gs.Find("Arc"),true);gs.SetDirect(gs.Find("Wardogs"),false);var gs2=new GameStore(p);
+   Ok(gs2.Find("Arc").Direct&&!gs2.Find("Wardogs").Direct&&gs2.Find("Arc").Enabled,"напрямую: переключение сохраняется");
+   Ipset.WriteDirect(p,new string[0]);Ok(Util.ReadEntries(p.IpsetDirect).SequenceEqual(new[]{Ipset.Placeholder}),"напрямую: пустой список - заглушка, а не пустой файл");
+   Ipset.WriteDirect(p,gs2.DirectSubnets());Ok(Util.ReadEntries(p.IpsetDirect).SequenceEqual(new[]{"4.4.4.0/24"}),"напрямую: список пишется");
+   var f=Path.Combine(dir,"s.txt");SettingsFile.Save(f,p,gs2.Games,new Dictionary<string,string>());var rd=SettingsFile.Read(f,p);
+   Ok(rd.Games.First(x=>x.Exe=="Arc").Direct&&!rd.Games.First(x=>x.Exe=="Wardogs").Direct,"напрямую: режим переносится файлом настроек");
+  }finally{try{Directory.Delete(dir,true);}catch{}}
+  // Подбор: обязательный сайт без адреса (cdninstagram.com) не в счёт, иначе подбор каждый раз гоняет все конфиги
+  var cnt=typeof(Selector).GetMethod("Countable",BindingFlags.NonPublic|BindingFlags.Static);
+  var mixed=new List<SiteResult>{new SiteResult{Status=SiteStatus.Ok},new SiteResult{Status=SiteStatus.NoDns}};
+  Ok((bool)cnt.Invoke(null,new object[]{mixed,0})&&!(bool)cnt.Invoke(null,new object[]{mixed,1}),"подбор: сайт без адреса не в счёт");
+  var none=new List<SiteResult>{new SiteResult{Status=SiteStatus.NoDns},new SiteResult{Status=SiteStatus.NoDns}};
+  Ok((bool)cnt.Invoke(null,new object[]{none,0}),"подбор: нет адреса ни у кого - это нет интернета, считаем как обычно");
+  // «Проверить» у имени без адреса: «Подобрать» не предлагаем
+  var sv=new SitesView(()=>new List<Tuple<string,string,bool>>(),(x,y)=>{},(x,y)=>{},x=>{},u=>new SiteResult{Url=u,Status=SiteStatus.NoDns},u=>{});
+  var hid=BindingFlags.NonPublic|BindingFlags.Instance;typeof(SitesView).GetMethod("StartCheck",hid).Invoke(sv,new object[]{"cdninstagram.com"});
+  var states=(System.Collections.IDictionary)typeof(SitesView).GetField("states",hid).GetValue(sv);
+  Func<string,object> F=k=>{var o=states["cdninstagram.com"];return o.GetType().GetField(k).GetValue(o);};
+  var t0=Environment.TickCount;while(Environment.TickCount-t0<3000&&(bool)F("Busy"))System.Threading.Thread.Sleep(20);
+  Ok(!(bool)F("Busy")&&(bool)F("NoName"),"проверка сайта: имя без адреса - «Подобрать» не предлагается");
  }
  static void Hints(){var t=typeof(HintsView);int listW=(int)t.GetField("ListWidth",BindingFlags.NonPublic|BindingFlags.Static).GetValue(null),detailW=(int)t.GetField("DetailWidth",BindingFlags.NonPublic|BindingFlags.Static).GetValue(null);
   var rowFont=(Font)t.GetField("RowFont",BindingFlags.NonPublic|BindingFlags.Static).GetValue(null);var stepFont=(Font)t.GetField("StepFont",BindingFlags.NonPublic|BindingFlags.Static).GetValue(null);var noteFont=(Font)t.GetField("NoteFont",BindingFlags.NonPublic|BindingFlags.Static).GetValue(null);

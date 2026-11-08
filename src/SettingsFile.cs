@@ -51,7 +51,7 @@ namespace ZapretTray
             }
             foreach (var g in games)
             {
-                o.AppendLine("[game " + g.Exe + "|" + (g.Enabled ? "1" : "0") + "]");
+                o.AppendLine("[game " + g.Exe + "|" + (g.Enabled ? "1" : "0") + (g.Direct ? "|1" : "") + "]");
                 foreach (var s in g.Subnets.OrderBy(x => x)) o.AppendLine(s);
             }
             File.WriteAllText(file, o.ToString(), new UTF8Encoding(false));
@@ -93,7 +93,7 @@ namespace ZapretTray
             if (!GameName.IsMatch(parts[0])) return null;
             var g = result.Games.FirstOrDefault(x => string.Equals(x.Exe, parts[0], StringComparison.OrdinalIgnoreCase));
             if (g != null) return g;
-            g = new Game { Exe = parts[0], Enabled = parts.Length < 2 || parts[1] == "1" };
+            g = new Game { Exe = parts[0], Enabled = parts.Length < 2 || parts[1] == "1", Direct = parts.Length > 2 && parts[2] == "1" };
             result.Games.Add(g);
             return g;
         }

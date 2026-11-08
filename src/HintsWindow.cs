@@ -33,7 +33,7 @@ namespace ZapretTray
 
         static readonly Hint[] Broken =
         {
-            new Hint("sites", Blue, "Не открывается сайт", "Не помогло - в «Подключении» нажми «Подобрать конфиг заново».",
+            new Hint("sites", Blue, "Не открывается сайт", "Потом нажми «Проверить» у сайта. Не открылся - «Подобрать», и программа подберёт конфиг под него.",
                 "Мои сайты", "Впиши сайт или IP", "Добавить"),
             new Hint("undo", Orange, "Сайт сломался от программы", "Сайт останется в списке, но обходить его программа больше не будет.",
                 "Мои сайты", "Выключи переключатель у сайта"),
@@ -41,6 +41,8 @@ namespace ZapretTray
                 "Подключение", "Подобрать конфиг с лучшим пингом"),
             new Hint("games", Green, "Лагает игра", "Пока игра запущена, на главной в плитке «Приложения» виден её пинг.",
                 "Мои приложения", "Добавить из установленных", "Запусти игру"),
+            new Hint("games", Orange, "Хрипит голос в игре", "Вход в игру останется через обход, а голос и сам матч пойдут напрямую. Игра - в разделе «Твои приложения», не во «Встроенных играх». Потом перезайди в матч.",
+                "Мои приложения", "Нажми на игру", "Голос и матч напрямую"),
             new Hint("dns", Purple, "Крестик у YouTube", "Не помогло - там же нажми «Исправить DNS». Обычно программа делает это сама.",
                 "Подключение", "Подобрать конфиг заново"),
             new Hint("undo", Purple, "Стало хуже после DNS", "Настройки DNS станут ровно такими, какими были до исправления.",
@@ -59,6 +61,8 @@ namespace ZapretTray
                 "Проверки", "Отметь обязательные"),
             new Hint("plus", Green, "Добавить своё приложение", "Три способа: из установленных, запущенное или указать файл. Значок приложения подтянется сам.",
                 "Мои приложения", "Добавить из установленных"),
+            new Hint("fast", Orange, "Как пускать новую игру", "Сразу после добавления программа спросит: «Голос и матч напрямую» (советуем, голос не хрипит) или «Всё через обход» (если игра не подключается к матчу). Поменять можно в любой момент.",
+                "Мои приложения", "Нажми на игру", "Голос и матч напрямую"),
             new Hint("games", Green, "Встроенные игры", "Клик по игре включает или выключает для неё обход.",
                 "Мои приложения", "ARC Raiders или Wardogs"),
             new Hint("games", Green, "Выключить или убрать", "«Удалить» стирает и адреса, которые программа собрала для приложения.",
@@ -430,6 +434,12 @@ namespace ZapretTray
         readonly Action<string, bool> add;
         readonly Action<Tuple<string, string, bool>, bool> setExclude;
         readonly Action<Tuple<string, string, bool>> remove;
+        readonly Func<string, SiteResult> check;   // проверить один сайт (идёт в фоне)
+        readonly Action<string> pickFor;           // подобрать конфиг под сайт
+
+        // Результат кнопки «Проверить» по каждому сайту
+        class CheckState { public bool Busy, Opened, NoName; public double Ms; public string Stage; }
+        readonly Dictionary<string, CheckState> states = new Dictionary<string, CheckState>(StringComparer.OrdinalIgnoreCase);
 
         readonly CueBox box = new CueBox { BorderStyle = BorderStyle.None, Font = MenuKit.Font, Cue = "Вставь любую ссылку, сайт или IP: https, www и остальное лишнее уберётся само" };
         readonly List<KeyValuePair<Rectangle, Action>> hots = new List<KeyValuePair<Rectangle, Action>>();
@@ -444,12 +454,15 @@ namespace ZapretTray
         const TextFormatFlags Center = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
 
         public SitesView(Func<List<Tuple<string, string, bool>>> list, Action<string, bool> add,
-            Action<Tuple<string, string, bool>, bool> setExclude, Action<Tuple<string, string, bool>> remove)
+            Action<Tuple<string, string, bool>, bool> setExclude, Action<Tuple<string, string, bool>> remove,
+            Func<string, SiteResult> check = null, Action<string> pickFor = null)
         {
             this.list = list;
             this.add = add;
             this.setExclude = setExclude;
             this.remove = remove;
+            this.check = check;
+            this.pickFor = pickFor;
             box.Enter += (s, e) => { if (host != null) host.Invalidate(); };
             box.Leave += (s, e) => { if (host != null) host.Invalidate(); };
             box.KeyDown += (s, e) =>
@@ -469,11 +482,45 @@ namespace ZapretTray
             {
                 entries = list();
                 error = null;
+                // Старые результаты проверки к новому открытию уже устарели
+                foreach (var k in new List<string>(states.Keys)) if (!states[k].Busy) states.Remove(k);
                 if (box.Parent == null) host.Controls.Add(box);
                 box.Show();
                 box.Focus();
             }
             else box.Hide();
+        }
+
+        // Проверка в фоне: окно не замирает, результат появится в строке сайта
+        void StartCheck(string value)
+        {
+            CheckState old;
+            if (states.TryGetValue(value, out old) && old.Busy) return;
+            var st = new CheckState { Busy = true };
+            states[value] = st;
+            var h = host;
+            System.Threading.Tasks.Task.Factory.StartNew(() => check("https://" + value)).ContinueWith(t =>
+            {
+                var r = t.IsFaulted ? null : t.Result;
+                Action done = () =>
+                {
+                    st.Busy = false;
+                    st.Opened = r != null && r.Opened;
+                    st.Ms = r != null ? r.TlsMs : 0;
+                    // Имени нет вообще (так бывает у адресов картинок вроде cdninstagram.com): конфиг тут ни при чём, подбирать нечего
+                    st.NoName = r != null && r.Status == SiteStatus.NoDns;
+                    st.Stage = r == null ? "проверка не удалась" : st.NoName ? "у самого имени нет страницы" : r.Stage.Length > 0 ? r.Stage : "адрес не находится";
+                    if (h != null && !h.IsDisposed) h.Invalidate();
+                };
+                if (h != null && !h.IsDisposed && h.IsHandleCreated) h.BeginInvoke(done); else done();
+            });
+            if (host != null) host.Invalidate();
+        }
+
+        void Pick(string value)
+        {
+            states.Remove(value);
+            pickFor("https://" + value);
         }
 
         void Add()
@@ -552,14 +599,46 @@ namespace ZapretTray
                 var badge = new Rectangle(x + 11, y + 10, 34, 34);
                 bool isIp = entry.Item2.IndexOf("ipset", StringComparison.OrdinalIgnoreCase) >= 0;
                 ControlPanel.Badge(g, badge, entry.Item3 ? Color.FromArgb(230, 126, 34) : Color.FromArgb(14, 136, 232), isIp ? "dns" : "sites");
-                TextRenderer.DrawText(g, entry.Item1, MenuKit.Bold, new Rectangle(x + 54, y, ContentWidth - 250, RowHeight), P.Text, Line);
 
                 var del = new Rectangle(row.Right - 44, y + 11, 32, 32);
                 var toggle = new Rectangle(del.Left - 52, y + 16, 40, 22);
                 bool on = !entry.Item3;
-                TextRenderer.DrawText(g, on ? "Обход" : "Исключён", MenuKit.Small, new Rectangle(toggle.Left - 92, y, 84, RowHeight), on ? P.Text : P.SubText,
+                var label = new Rectangle(toggle.Left - 92, y, 84, RowHeight);
+                TextRenderer.DrawText(g, on ? "Обход" : "Исключён", MenuKit.Small, label, on ? P.Text : P.SubText,
                     TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
                 ControlPanel.DrawSwitch(g, toggle, on);
+
+                // Кнопка «Проверить» (у IP её нет: по адресу без имени сайт не проверить). Не открылся - «Подобрать»
+                int nameRight = label.Left - 8;
+                CheckState st = null;
+                if (check != null && !isIp)
+                {
+                    var btn = new Rectangle(label.Left - 112, y + 12, 104, 30);
+                    nameRight = btn.Left - 10;
+                    states.TryGetValue(entry.Item1, out st);
+                    bool busy = st != null && st.Busy;
+                    bool closed = st != null && !st.Busy && !st.Opened && !st.NoName && pickFor != null;
+                    bool hot = !busy && btn.Contains(mouse);
+                    if (closed) ControlPanel.Accent(g, btn, 8);
+                    else ControlPanel.Box(g, btn, hot ? P.Hover : P.Tile, 8);
+                    TextRenderer.DrawText(g, busy ? "Проверяю…" : closed ? "Подобрать" : "Проверить", MenuKit.Small, btn,
+                        closed ? Color.White : busy ? P.SubText : P.Text, Center);
+                    if (!busy) hots.Add(new KeyValuePair<Rectangle, Action>(btn, closed ? (Action)(() => Pick(entry.Item1)) : () => StartCheck(entry.Item1)));
+                }
+
+                // Название, под ним результат проверки
+                if (st == null)
+                    TextRenderer.DrawText(g, entry.Item1, MenuKit.Bold, new Rectangle(x + 54, y, nameRight - x - 54, RowHeight), P.Text, Line);
+                else
+                {
+                    TextRenderer.DrawText(g, entry.Item1, MenuKit.Bold, new Rectangle(x + 54, y + 7, nameRight - x - 54, 22), P.Text, Line);
+                    string result = st.Busy ? "Проверяю, открывается ли…"
+                        : st.Opened ? "Открывается · " + (int)Math.Round(st.Ms) + " мс"
+                        : st.NoName ? "Нечего проверять: " + st.Stage
+                        : "Не открывается: " + st.Stage;
+                    TextRenderer.DrawText(g, result, MenuKit.Small, new Rectangle(x + 54, y + 28, nameRight - x - 54, 18),
+                        st.Busy || st.NoName ? P.SubText : st.Opened ? Theme.On : Theme.Bad, Line);
+                }
 
                 if (del.Contains(mouse)) ControlPanel.Box(g, del, Theme.Bad, 8);
                 using (var p = new Pen(del.Contains(mouse) ? Color.White : P.SubText, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
@@ -916,6 +995,181 @@ namespace ZapretTray
         }
     }
 
+    // Сразу после добавления игры: как её пускать. Человек сразу видит, что значит переключатель,
+    // и не ищет потом, почему хрипит голос. «Больше не спрашивать» - дальше без окна, с выбором по умолчанию
+    class GameModeDialog : Form
+    {
+        const int W = 480, H = 392, Pad = 20;
+        static readonly Font TitleFont = new Font("Segoe UI Semibold", 13f);
+        readonly Rectangle directCard = new Rectangle(Pad, 84, W - Pad * 2, 80);
+        readonly Rectangle bypassCard = new Rectangle(Pad, 174, W - Pad * 2, 80);
+        readonly Rectangle askBox = new Rectangle(Pad, H - Pad - 38, 230, 38);
+        readonly Rectangle doneButton = new Rectangle(W - Pad - 130, H - Pad - 38, 130, 38);
+        readonly Rectangle closeButton = new Rectangle(W - 44, 10, 34, 28);
+        readonly string game;
+        readonly Image icon;   // значок самой игры; нет - зелёный джойстик
+        string hover;
+
+        public bool Direct = true;
+        public bool DontAsk;
+
+        static Palette P { get { return Theme.Current; } }
+
+        public GameModeDialog(string exe)
+        {
+            icon = ControlPanel.GameIcon(exe, out game);
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.CenterScreen;
+            ShowInTaskbar = false;
+            TopMost = true;
+            DoubleBuffered = true;
+            KeyPreview = true;
+            AutoScaleMode = AutoScaleMode.None;
+            ClientSize = new Size(W, H);
+            Text = game + " добавлена";
+            Icon = Theme.AppIcon();
+            BackColor = P.Back;
+            KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape || e.KeyCode == Keys.Enter) Close(); };
+            Shown += (s, e) => Theme.RoundCorners(this);
+        }
+
+        // Возвращает выбор: true - голос и матч напрямую. Закрыли крестиком - остаётся «напрямую»
+        public static bool Ask(string game, out bool dontAsk)
+        {
+            using (var d = new GameModeDialog(game))
+            {
+                d.ShowDialog();
+                dontAsk = d.DontAsk;
+                return d.Direct;
+            }
+        }
+
+        const TextFormatFlags Line = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis;
+        const TextFormatFlags Wrap = TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak;
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(P.Back);
+            ControlPanel.Glow(g, new Rectangle(W - 260, -200, 440, 360), P.Check, 36);
+            using (var pen = new Pen(P.Border)) g.DrawRectangle(pen, 0, 0, W - 1, H - 1);
+
+            if (icon != null)
+            {
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.DrawImage(icon, new Rectangle(Pad, Pad, 40, 40));
+            }
+            else ControlPanel.Badge(g, new Rectangle(Pad, Pad, 40, 40), Color.FromArgb(32, 170, 92), "games");
+            TextRenderer.DrawText(g, game + " добавлена", TitleFont, new Rectangle(Pad + 54, Pad - 2, W - Pad * 2 - 54 - 40, 26), P.Text, Line);
+            TextRenderer.DrawText(g, "Как пускать игру?", MenuKit.Small, new Rectangle(Pad + 54, Pad + 22, 320, 20), P.SubText, Line);
+
+            if (hover == "close") ControlPanel.Box(g, closeButton, Theme.Bad, 7);
+            using (var p = new Pen(hover == "close" ? Color.White : P.SubText, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                int cx = closeButton.Left + closeButton.Width / 2, cy = closeButton.Top + closeButton.Height / 2;
+                g.DrawLine(p, cx - 5, cy - 5, cx + 5, cy + 5);
+                g.DrawLine(p, cx + 5, cy - 5, cx - 5, cy + 5);
+            }
+
+            Option(g, directCard, Direct, hover == "direct", "Голос и матч напрямую", "советуем",
+                "Вход в игру через обход, а голос и матч - как без zapret. Голос не хрипит.");
+            Option(g, bypassCard, !Direct, hover == "bypass", "Всё через обход", null,
+                "Выбирай, если с первым вариантом игра не подключается к матчу.");
+
+            TextRenderer.DrawText(g, "Поменять можно потом: «Мои приложения» → «Твои приложения» → нажми на игру.", MenuKit.Small,
+                new Rectangle(Pad, bypassCard.Bottom + 12, W - Pad * 2, 40), P.SubText, Wrap);
+
+            // Галочка «Больше не спрашивать»
+            var box = new Rectangle(askBox.Left, askBox.Top + askBox.Height / 2 - 9, 18, 18);
+            using (var path = ThemedRenderer.RoundRect(box, 5))
+            {
+                if (DontAsk) using (var b = new SolidBrush(P.Check)) g.FillPath(b, path);
+                using (var pen = new Pen(DontAsk ? P.Check : hover == "ask" ? P.Text : P.SubText, 1.4f)) g.DrawPath(pen, path);
+            }
+            if (DontAsk)
+                using (var p = new Pen(Color.White, 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+                    g.DrawLines(p, new[] { new Point(box.Left + 4, box.Top + 9), new Point(box.Left + 8, box.Top + 13), new Point(box.Left + 14, box.Top + 5) });
+            TextRenderer.DrawText(g, "Больше не спрашивать", MenuKit.Font, new Rectangle(box.Right + 10, askBox.Top, askBox.Width - 28, askBox.Height), hover == "ask" ? P.Text : P.SubText, Line);
+
+            const TextFormatFlags Center = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+            ControlPanel.Accent(g, doneButton, 10);
+            if (hover == "done") using (var b = new SolidBrush(Color.FromArgb(40, Color.White))) using (var path = ThemedRenderer.RoundRect(doneButton, 10)) g.FillPath(b, path);
+            TextRenderer.DrawText(g, "Готово", MenuKit.Bold, doneButton, Color.White, Center);
+        }
+
+        static void Option(Graphics g, Rectangle r, bool on, bool hot, string title, string tag, string note)
+        {
+            ControlPanel.Card(g, r, hot && !on ? P.Hover : P.Card, 12);
+            if (on)
+                using (var path = ThemedRenderer.RoundRect(r, 12))
+                using (var pen = new Pen(P.Check, 1.6f)) g.DrawPath(pen, path);
+            // Кружок выбора
+            var c = new Rectangle(r.Left + 16, r.Top + 18, 18, 18);
+            using (var pen = new Pen(on ? P.Check : P.SubText, 1.6f)) g.DrawEllipse(pen, c);
+            if (on) using (var b = new SolidBrush(P.Check)) g.FillEllipse(b, c.Left + 4, c.Top + 4, 10, 10);
+            int x = r.Left + 46;
+            var size = TextRenderer.MeasureText(title, MenuKit.Bold, Size.Empty, TextFormatFlags.NoPadding);
+            TextRenderer.DrawText(g, title, MenuKit.Bold, new Rectangle(x, r.Top + 14, r.Right - x - 12, 26), P.Text, Line);
+            if (tag != null)
+            {
+                var ts = TextRenderer.MeasureText(tag, MenuKit.Small, Size.Empty, TextFormatFlags.NoPadding);
+                var tr = new Rectangle(x + size.Width + 10, r.Top + 17, ts.Width + 14, 20);
+                ControlPanel.Box(g, tr, Color.FromArgb(50, Theme.On), 10);
+                TextRenderer.DrawText(g, tag, MenuKit.Small, tr, Theme.On, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+            }
+            TextRenderer.DrawText(g, note, MenuKit.Small, new Rectangle(x, r.Top + 40, r.Right - x - 14, r.Height - 44), P.SubText, Wrap);
+        }
+
+        string HitTest(Point p)
+        {
+            if (doneButton.Contains(p)) return "done";
+            if (closeButton.Contains(p)) return "close";
+            if (directCard.Contains(p)) return "direct";
+            if (bypassCard.Contains(p)) return "bypass";
+            if (askBox.Contains(p)) return "ask";
+            return null;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            var hit = HitTest(e.Location);
+            Cursor = hit != null ? Cursors.Hand : Cursors.Default;
+            if (hit == hover) return;
+            hover = hit;
+            Invalidate();
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            hover = null;
+            Invalidate();
+        }
+
+        [DllImport("user32.dll")] static extern bool ReleaseCapture();
+        [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left) return;
+            var hit = HitTest(e.Location);
+            if (hit == "done" || hit == "close") Close();
+            else if (hit == "direct") Direct = true;
+            else if (hit == "bypass") Direct = false;
+            else if (hit == "ask") DontAsk = !DontAsk;
+            else
+            {
+                ReleaseCapture();
+                SendMessage(Handle, 0xA1, (IntPtr)2, IntPtr.Zero);
+                return;
+            }
+            Invalidate();
+        }
+    }
+
     // "Что нового": один раз после обновления. Пункты для каждой версии пишем здесь; нет пунктов - окна нет.
     // Version = Welcome - то же окно для первой установки: коротко, что где
     class WhatsNewDialog : Form
@@ -929,6 +1183,11 @@ namespace ZapretTray
 
         static readonly Dictionary<string, Item[]> Notes = new Dictionary<string, Item[]>
         {
+            { "1.0", new[] {
+                new Item("home", Color.FromArgb(14, 136, 232), "Новый дизайн", "Просторнее, большая кнопка включения и плавные анимации"),
+                new Item("fast", Color.FromArgb(230, 126, 34), "Голос и матч напрямую", "Голос в играх больше не хрипит: переключатель у каждой игры"),
+                new Item("games", Color.FromArgb(32, 170, 92), "Выбор при добавлении игры", "Программа сразу спросит, как пускать новую игру"),
+                new Item("ping", Color.FromArgb(0, 150, 160), "Подбор стабильнее", "Не скачет между конфигами из-за сайтов без адреса") } },
             { "0.9.1", new[] {
                 new Item("hints", Color.FromArgb(142, 84, 233), "Подсказки обо всём", "Раздел «Подсказки» теперь описывает весь функционал программы"),
                 new Item("ping", Color.FromArgb(32, 170, 92), "Обязательные проверки", "Выбери, под какие сайты подбирать обход (раздел «Проверки»)") } },

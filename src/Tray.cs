@@ -113,6 +113,7 @@ namespace ZapretTray
         ToolStripMenuItem gamesItem, behaviorItem, watchdogItem, autostartItem, hintsItem, exitItem;
         ControlPanel panel;
 
+
         bool wantOn;            // пользователь хочет, чтобы zapret работал
         bool busy;              // идёт подбор
         string busyText = "";
@@ -144,6 +145,7 @@ namespace ZapretTray
             checks = new CheckStore(paths);
             ControlPanel.LoadAppPics(paths.IconsDir);
             BugReport.MachineId(settings);   // номер компьютера появляется при первом запуске
+            Selector.WinwsExtra = WinwsExtra;
 
             iconOn = MakeIcon(Color.FromArgb(46, 170, 80));
             iconOff = MakeIcon(Color.FromArgb(150, 150, 150));
@@ -168,7 +170,7 @@ namespace ZapretTray
             {
                 if (e.Mode == Microsoft.Win32.PowerModes.Resume) OnUi(CheckSoon);
             };
-            System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += (s, e) => OnUi(CheckSoon);
+            System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += (s, e) => OnUi(() => { CheckSoon(); CheckIface(); });
 
             // Обновление конфигов прервалось на середине (выключили комп и т.п.) - возвращаем старые
             if (ZapretUpdater.BackupExists(paths))
@@ -223,7 +225,8 @@ namespace ZapretTray
                 Notify("Установлена служба zapret - она мешает. Запусти Setup.exe и отметь 'Удалить службу zapret'.", ToolTipIcon.Warning);
             }
 
-            ReapplyIpset();
+            ZapretUpdater.EnsureDirect(paths);
+            ReapplyIpset();   // пишет и список игр напрямую: без него поправленные конфиги не запустятся
             SyncGameFilter();
             TurnOn();
         }
@@ -369,7 +372,9 @@ namespace ZapretTray
                         { sitesItem, new SitesView(MySites,
                             (value, isIp) => { bool c; ApplyEntry(value, isIp, false, out c); },
                             (entry, exclude) => { bool c; ApplyEntry(entry.Item1, IsIpFile(entry.Item2), exclude, out c); },
-                            entry => RemoveSite(entry.Item1, entry.Item2)) },
+                            entry => RemoveSite(entry.Item1, entry.Item2),
+                            url => SiteCheck.Run(url, 8),
+                            PickForSite) },
                         { checksItem, new ChecksView(() => checks.All(),
                             url => checks.Add(url),
                             (c, req) => checks.SetRequired(c.Url, req),
@@ -499,6 +504,10 @@ namespace ZapretTray
                 enable.Checked = game.Enabled;
                 enable.Tag = ItemKind.Toggle;
                 item.DropDownItems.Add(enable);
+                var direct = MenuKit.Icon(Item("Голос и матч напрямую", (s, e) => ToggleDirect(game)), "fast", "Если в игре хрипит голос");
+                direct.Checked = game.Direct;
+                direct.Tag = ItemKind.Toggle;
+                item.DropDownItems.Add(direct);
                 item.DropDownItems.Add(MenuKit.Icon(Item("Удалить", (s, e) => RemoveGame(game)), "trash", "Вместе с собранными адресами"));
                 MenuKit.SubMenu(item, MenuKit.GameWidth);
                 gamesItem.DropDownItems.Add(item);
@@ -1118,6 +1127,14 @@ namespace ZapretTray
         }
 
         // Подбор по кнопке. Подбор при запуске уже идёт - заменяем его, а не заставляем ждать. Отменённый сам выйдет, новый его дождётся
+        // Кнопка «Подобрать» у сайта в «Моих сайтах»: сайт становится обязательной проверкой, и подбор идёт под него
+        void PickForSite(string url)
+        {
+            if (!checks.Add(url)) checks.SetRequired(CheckStore.Normalize(url), true);
+            Notify("Подбираю конфиг под " + url.Replace("https://", "") + ". Сайт теперь в обязательных проверках (раздел «Проверки»).", ToolTipIcon.Info, true);
+            UserSelect("fast");
+        }
+
         void UserSelect(string mode)
         {
             if (afterSelect != null) return;
@@ -1845,6 +1862,7 @@ namespace ZapretTray
         string ReapplyIpset()
         {
             var wanted = Util.ReadEntries(paths.IpsetUser).Concat(games.EnabledSubnets());
+            Ipset.WriteDirect(paths, games.DirectSubnets());
             string message;
             try { Ipset.Rebuild(paths, wanted, out message); }
             catch (Exception ex) { message = "Не удалось обновить список IP: " + ex.Message; }
@@ -1895,12 +1913,33 @@ namespace ZapretTray
         void AfterAdd(PickItem it, bool installed)
         {
             var exe = it.Exe;
-            games.Add(exe);
+            bool isNew = games.Find(exe) == null;
+            var game = games.Add(exe);
             // Иконка всегда: из exe (чётче), иначе из значка окна, что дал список
             var png = Path.Combine(paths.IconsDir, exe + ".png");
             bool saved = it.ExePath != null && AppScan.SaveIcon(it.ExePath, png) != null;
             if (!saved && it.Icon != null) saved = AppScan.SaveImage(it.Icon, png);
             if (saved) ControlPanel.LoadAppPics(paths.IconsDir);
+            // Новая игра: как её пускать. По умолчанию голос и матч напрямую - от подделок zapret хрипит голос (WARDOGS)
+            if (isNew)
+            {
+                // «Больше не спрашивать» запоминает и выбор
+                bool direct = settings.Get("gamemode_default") != "bypass";
+                if (settings.Get("gamemode_ask") != "0")
+                {
+                    bool dontAsk;
+                    try { direct = GameModeDialog.Ask(exe, out dontAsk); }
+                    catch (Exception ex) { Logger.Write("окно режима игры: " + ex.Message); dontAsk = false; }
+                    if (dontAsk)
+                    {
+                        settings.Set("gamemode_ask", "0");
+                        settings.Set("gamemode_default", direct ? null : "bypass");
+                    }
+                }
+                games.SetDirect(game, direct);
+                Logger.Write("игра " + exe + ": добавлена, " + (direct ? "голос и матч напрямую" : "всё через обход"));
+                ReapplyIpset();
+            }
             RefreshWatchedGames();
             ApplyGameFilter();
             if (flows.Error != null)
@@ -1931,6 +1970,18 @@ namespace ZapretTray
             ApplyGameFilter();
             var note = ReapplyIpset();
             if (note.Length > 0) Notify(note, ToolTipIcon.Warning);
+        }
+
+        // Игра «напрямую»: её игровые сервера zapret больше не трогает. Перезапуск - чтобы правило сработало и для уже открытых соединений
+        void ToggleDirect(Game g)
+        {
+            games.SetDirect(g, !g.Direct);
+            Logger.Write("игра " + g.Exe + ": " + (g.Direct ? "голос и матч напрямую" : "снова через обход"));
+            var note = ReapplyIpset();
+            RestartCurrent();
+            Notify(note.Length > 0 ? note : g.Direct
+                ? "Игра " + g.Exe + ": голос и матч теперь идут напрямую, вход - через обход. Перезайди в матч."
+                : "Игра " + g.Exe + ": снова целиком через обход.", note.Length > 0 ? ToolTipIcon.Warning : ToolTipIcon.Info, true);
         }
 
         void RemoveGame(Game g)
@@ -2024,6 +2075,29 @@ namespace ZapretTray
                     }
                 }
             }
+        }
+
+        // ---------- туннели VPN ----------
+
+        // winws работает только на настоящем подключении, когда трафик идёт через туннель VPN (Clash в режиме TUN и т.п.):
+        // иначе его поддельные пакеты попадают внутрь туннеля и уходят на сервер как данные
+        string WinwsExtra()
+        {
+            if (Util.OtherTunnel() == null) return "";
+            var phys = Util.PhysicalAdapter();
+            int idx = phys != null ? Util.Ipv4Index(phys) : -1;
+            return idx > 0 ? "--wf-iface=" + idx : "";
+        }
+
+        // Туннель появился или пропал, сменилась сеть: перезапустить winws с нужным адаптером
+        void CheckIface()
+        {
+            if (busy || !wantOn || !Util.WinwsRunning()) return;
+            string want;
+            try { want = WinwsExtra(); } catch { return; }
+            if (want == Selector.LastExtra) return;
+            Logger.Write("zapret: " + (want.Length > 0 ? "работает только на основном подключении (туннель)" : "снова на всех подключениях"));
+            RestartCurrent();
         }
 
         // ---------- прочее ----------

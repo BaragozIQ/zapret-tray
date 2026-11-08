@@ -150,6 +150,45 @@ namespace ZapretTray
             new Regex(@"^--[^&|<>`]*\^?\s*$"),
         };
 
+        // Игры «напрямую»: в игровых правилах (все высокие порты) их сервера исключены - никаких подделок, как без zapret.
+        // Порты 80/443 не трогаем: вход и сайты игры идут через обход, как раньше
+        public const string DirectExclude = " --ipset-exclude=\"%LISTS%tray-ipset-direct.txt\"";
+
+        public static string PatchDirect(string bat)
+        {
+            if (bat.IndexOf("tray-ipset-direct.txt", StringComparison.OrdinalIgnoreCase) >= 0) return bat;
+            bat = Regex.Replace(bat, @"(--filter-udp=%GameFilterUDP%)(?=\s)", "$1" + DirectExclude.Replace("$", "$$"), RegexOptions.IgnoreCase);
+            return Regex.Replace(bat, @"(--filter-tcp=%GameFilterTCP%)(?=\s)", "$1" + DirectExclude.Replace("$", "$$"), RegexOptions.IgnoreCase);
+        }
+
+        // Место для параметров от программы: --wf-iface, когда трафик идёт через VPN-туннель.
+        // Без него winws подмешивает поддельные пакеты прямо в туннель, а VPN отправляет их серверу как настоящие данные
+        // (хрипит голос, рвутся соединения). Переменную задаёт Selector.StartConfig; не задана - в батнике она пустая
+        public const string ExtraVar = "%TrayWinws%";
+
+        public static string PatchIface(string bat)
+        {
+            if (bat.IndexOf(ExtraVar, StringComparison.OrdinalIgnoreCase) >= 0) return bat;
+            var re = new Regex(@"(""%BIN%winws\.exe""[^\r\n]*?--wf-udp=[^\s\^]+)", RegexOptions.IgnoreCase);
+            if (!re.IsMatch(bat)) re = new Regex(@"(""%BIN%winws\.exe""[^\r\n]*?--wf-tcp=[^\s\^]+)", RegexOptions.IgnoreCase);
+            return re.Replace(bat, "$1 " + ExtraVar, 1);
+        }
+
+        // Установленные конфиги без этих правок (старая установка или старое обновление) - поправить на месте
+        public static void EnsureDirect(AppPaths paths)
+        {
+            try
+            {
+                foreach (var bat in Directory.GetFiles(paths.Core, "general*.bat"))
+                {
+                    var text = File.ReadAllText(bat, Raw);
+                    var patched = PatchIface(PatchDirect(text));
+                    if (patched != text) File.WriteAllText(bat, patched, Raw);
+                }
+            }
+            catch (Exception ex) { Logger.Write("правка конфигов для игр напрямую: " + ex.Message); }
+        }
+
         // Первая строка, которой в конфиге быть не должно, или null
         public static string UnsafeLine(string bat)
         {
@@ -174,6 +213,7 @@ namespace ZapretTray
                 var text = File.ReadAllText(bat, Raw);
                 var patched = Regex.Replace(text, "(start\\s+\"[^\"]*\"\\s+)/min(\\s)", "$1/b$2", RegexOptions.IgnoreCase);
                 if (patched == text) throw new Exception("не понял устройство конфига " + Path.GetFileName(bat));
+                patched = PatchIface(PatchDirect(patched));
                 var bad = UnsafeLine(patched);
                 if (bad != null) throw new Exception("в конфиге " + Path.GetFileName(bat) + " лишняя команда: " + bad);
                 File.WriteAllText(bat, patched, Raw);

@@ -35,7 +35,7 @@ namespace ZapretTray
 
         [STAThread]
         static void Main()
-        {
+        { ControlPanel.NoAnimation = true;
             SetProcessDPIAware();
             Application.EnableVisualStyles();
             dir = Path.GetFullPath("screens");

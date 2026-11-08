@@ -17,7 +17,7 @@ namespace ZapretTray
     static class AppInfo
     {
         public const string Name = "Zapret Tray";
-        public const string Version = "0.9.1";
+        public const string Version = "1.0";
         public const string RunTask = "ZapretTray";
         public const string AutoTask = "ZapretTray Autostart";
         public const string TrayExe = "ZapretTray.exe";
@@ -46,6 +46,8 @@ namespace ZapretTray
         public string IpsetAll { get { return Path.Combine(Lists, "ipset-all.txt"); } }
         public string IpsetUser { get { return Path.Combine(Lists, "tray-ipset-user.txt"); } }
         public string IpsetAdded { get { return Path.Combine(Lists, "tray-ipset-added.txt"); } }
+        // Сервера игр «напрямую»: конфиги не трогают их игровые порты. Пустым быть не может - winws не запустится
+        public string IpsetDirect { get { return Path.Combine(Lists, "tray-ipset-direct.txt"); } }
         public string GamesList { get { return Path.Combine(Lists, "tray-games.txt"); } }
         public string ChecksList { get { return Path.Combine(Lists, "tray-checks.txt"); } }
         public string ListGeneralUser { get { return Path.Combine(Lists, "list-general-user.txt"); } }
@@ -332,6 +334,53 @@ namespace ZapretTray
             return null;
         }
 
+        // Настоящее подключение к интернету (Ethernet, Wi-Fi): с шлюзом и не VPN. null - не нашли
+        public static System.Net.NetworkInformation.NetworkInterface PhysicalAdapter()
+        {
+            try
+            {
+                var best = RouteAdapter();
+                if (best != null && !LooksLikeVpn(best) && HasGateway(best)) return best;
+                foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                    if (ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback || LooksLikeVpn(ni)) continue;
+                    if (HasGateway(ni)) return ni;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        static bool HasGateway(System.Net.NetworkInformation.NetworkInterface ni)
+        {
+            try
+            {
+                return ni.GetIPProperties().GatewayAddresses.Any(a => a.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && !a.Address.Equals(IPAddress.Any));
+            }
+            catch { return false; }
+        }
+
+        // Другой VPN в режиме TUN (Clash Verge и т.п.) поднят и забирает трафик: имя адаптера или null
+        public static string OtherTunnel()
+        {
+            try
+            {
+                foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up || !LooksLikeVpn(ni)) continue;
+                    if (HasGateway(ni)) return ni.Name;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        public static int Ipv4Index(System.Net.NetworkInformation.NetworkInterface ni)
+        {
+            try { return ni.GetIPProperties().GetIPv4Properties().Index; } catch { return -1; }
+        }
+
         public static bool LooksLikeVpn(System.Net.NetworkInformation.NetworkInterface ni)
         {
             return ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Tunnel
@@ -571,6 +620,21 @@ namespace ZapretTray
     // Что добавили мы - помним отдельно, чтобы уметь убрать и не затереть обновление списка из service.bat
     static class Ipset
     {
+        public const string Placeholder = "203.0.113.113/32";   // адрес для документации: ничей. Пустой список winws не принимает
+
+        // Сервера игр «напрямую». Пишем, только если что-то поменялось: winws перечитывает список при каждом изменении
+        public static void WriteDirect(AppPaths paths, IEnumerable<string> subnets)
+        {
+            var want = subnets.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (want.Count == 0) want.Add(Placeholder);
+            try
+            {
+                if (File.Exists(paths.IpsetDirect) && Util.ReadEntries(paths.IpsetDirect).SequenceEqual(want, StringComparer.OrdinalIgnoreCase)) return;
+                Util.WriteLinesAtomic(paths.IpsetDirect, want);
+            }
+            catch (Exception ex) { Logger.Write("список игр напрямую: " + ex.Message); }
+        }
+
         public static bool Rebuild(AppPaths paths, IEnumerable<string> wanted, out string message)
         {
             message = "";

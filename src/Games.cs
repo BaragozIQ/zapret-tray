@@ -13,6 +13,9 @@ namespace ZapretTray
     {
         public string Exe;      // имя процесса без .exe
         public bool Enabled;
+        // Игровой трафик (голос, матч) идёт напрямую, без подделок zapret. Вход и сайты игры - по-прежнему через обход.
+        // Для игр, у которых от подделок хрипит голос (WARDOGS): их сервера не заблокированы, им мешают лишние пакеты
+        public bool Direct;
         public HashSet<string> Subnets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         public volatile string LastServer;     // последний сервер, с которым соединялась игра. Только в памяти: для пинга
     }
@@ -31,7 +34,7 @@ namespace ZapretTray
             foreach (var line in Util.ReadEntries(paths.GamesList))
             {
                 var parts = line.Split('|');
-                var g = new Game { Exe = parts[0], Enabled = parts.Length < 2 || parts[1] == "1" };
+                var g = new Game { Exe = parts[0], Enabled = parts.Length < 2 || parts[1] == "1", Direct = parts.Length > 2 && parts[2] == "1" };
                 // Мусор, собранный прошлыми версиями, не берём
                 foreach (var s in Util.ReadEntries(GameFile(g.Exe)))
                 {
@@ -96,6 +99,11 @@ namespace ZapretTray
             lock (sync) { g.Enabled = enabled; SaveList(); }
         }
 
+        public void SetDirect(Game g, bool direct)
+        {
+            lock (sync) { g.Direct = direct; SaveList(); }
+        }
+
         // true - адрес новый
         public bool AddSubnet(Game g, string subnet)
         {
@@ -109,12 +117,19 @@ namespace ZapretTray
 
         void SaveList()
         {
-            Util.WriteLinesAtomic(paths.GamesList, Games.Select(g => g.Exe + "|" + (g.Enabled ? "1" : "0")));
+            Util.WriteLinesAtomic(paths.GamesList, Games.Select(g => g.Exe + "|" + (g.Enabled ? "1" : "0") + (g.Direct ? "|1" : "")));
         }
 
+        // Адреса игр в обход: у игр «напрямую» их не добавляем - их сервера не заблокированы
         public List<string> EnabledSubnets()
         {
-            lock (sync) return Games.Where(g => g.Enabled).SelectMany(g => g.Subnets).ToList();
+            lock (sync) return Games.Where(g => g.Enabled && !g.Direct).SelectMany(g => g.Subnets).ToList();
+        }
+
+        // Адреса игр «напрямую»: zapret не трогает их игровые порты, даже если они есть в общем списке IP
+        public List<string> DirectSubnets()
+        {
+            lock (sync) return Games.Where(g => g.Enabled && g.Direct).SelectMany(g => g.Subnets).OrderBy(s => s).ToList();
         }
 
         public HashSet<string> EnabledExes()
