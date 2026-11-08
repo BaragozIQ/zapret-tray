@@ -680,36 +680,33 @@ namespace ZapretTray
             g.DrawImage(Backdrop(), e.ClipRectangle, e.ClipRectangle, GraphicsUnit.Pixel);
             g.ScaleTransform(UiScale, UiScale);   // дальше всё рисуется в точках масштаба 100%
             DrawSidebar(g);
+            // Едет только подсветка слева: остальное окно не трогаем, иначе каждый кадр перерисовывает графики и тормозит
+            if (Dev(new Rectangle(0, 0, SideWidth, LH)).Contains(e.ClipRectangle)) { DrawFrame(g); return; }
 
-            // Сменилась страница: новая въезжает снизу и проявляется
-            var page = path.Count + "|" + (path.Count > 0 ? path[path.Count - 1].Text : "");
-            if (page != shownPage)
-            {
-                if (shownPage != null && !NoAnimation) { pageStart = Environment.TickCount & int.MaxValue; Animate(); }
-                shownPage = page;
-            }
-            float pe = pageStart >= 0 ? Ease(Elapsed(pageStart) / (float)PageMs) : 1f;
-            if (pe >= 1f) pageStart = -1;
-            var content = g.Save();
-            if (pe < 1f) g.TranslateTransform(0, (1f - pe) * 14f);
-            if (path.Count == 0) DrawHome(g);
-            else if (CurrentView != null) DrawView(g);
-            else DrawSection(g);
-            g.Restore(content);
-            if (pe < 1f)
-                using (var b = new SolidBrush(Color.FromArgb((int)(235 * (1f - pe)), P.Back))) g.FillRectangle(b, SideWidth, 0, LW - SideWidth, LH);
+            // Страница появляется сразу, без анимации (так решил владелец). Плавно едет только подсветка слева
+            DrawContent(g);
             DrawStatusPill(g);
             if (ToggleTheme != null) DrawThemeTab(g);
             DrawWindowButtons(g);
+            DrawFrame(g);
+        }
+
+        void DrawFrame(Graphics g)
+        {
             using (var p = new Pen(P.Border)) g.DrawRectangle(p, 0, 0, LW - 1, LH - 1);
+        }
+
+        void DrawContent(Graphics g)
+        {
+            if (path.Count == 0) DrawHome(g);
+            else if (CurrentView != null) DrawView(g);
+            else DrawSection(g);
         }
 
         // ---------- анимации ----------
 
-        const int PageMs = 320, SlideMs = 340, SwitchMs = 260;
+        const int SlideMs = 300, SwitchMs = 260;
         public static bool NoAnimation;   // для проверок: снимок сразу в конечном виде
-        string shownPage;
-        int pageStart = -1;
         Timer animTimer;
 
         static float Ease(float t)
@@ -718,6 +715,14 @@ namespace ZapretTray
             if (t <= 0f) return 0f;
             float u = 1f - t;
             return 1f - u * u * u;   // быстро в начале, мягко в конце
+        }
+
+        // Плавный разгон и плавное торможение: движение видно целиком, а не одним скачком в первых кадрах
+        static float EaseInOut(float t)
+        {
+            if (t >= 1f) return 1f;
+            if (t <= 0f) return 0f;
+            return t < 0.5f ? 4f * t * t * t : 1f - (float)Math.Pow(-2f * t + 2f, 3) / 2f;
         }
 
         // Пружинка для кружка переключателя: чуть перелетает и возвращается
@@ -733,11 +738,16 @@ namespace ZapretTray
         {
             if (animTimer == null)
             {
-                animTimer = new Timer { Interval = 15 };
+                animTimer = new Timer { Interval = 10 };
                 animTimer.Tick += (s, e) =>
                 {
-                    Invalidate();
-                    if (!Animating()) animTimer.Stop();
+                    // Переключатели - всё окно. Подсветка слева - только полоса слева, и сразу: кадры не копятся и не скачут
+                    bool sw = false;
+                    foreach (var st in switches.Values) if (st.Start >= 0) sw = true;
+                    if (sw) Invalidate();
+                    else Invalidate(Dev(new Rectangle(0, 0, SideWidth, LH)));
+                    Update();
+                    if (!Animating()) { animTimer.Stop(); Invalidate(); }
                 };
                 Disposed += (s, e) => animTimer.Dispose();
             }
@@ -746,7 +756,6 @@ namespace ZapretTray
 
         bool Animating()
         {
-            if (pageStart >= 0 && Elapsed(pageStart) < PageMs) return true;
             if (indStart >= 0 && Elapsed(indStart) < SlideMs) return true;
             foreach (var s in switches.Values) if (s.Start >= 0 && Elapsed(s.Start) < SwitchMs) return true;
             return false;
@@ -772,7 +781,7 @@ namespace ZapretTray
         RectangleF CurrentIndicator()
         {
             if (indStart < 0) return indTo;
-            float t = Ease(Elapsed(indStart) / (float)SlideMs);
+            float t = EaseInOut(Elapsed(indStart) / (float)SlideMs);
             if (t >= 1f) { indStart = -1; indFrom = indTo; return indTo; }
             return new RectangleF(indFrom.X + (indTo.X - indFrom.X) * t, indFrom.Y + (indTo.Y - indFrom.Y) * t, indFrom.Width + (indTo.Width - indFrom.Width) * t, indFrom.Height + (indTo.Height - indFrom.Height) * t);
         }
@@ -838,13 +847,23 @@ namespace ZapretTray
             var ind = Indicator(target);
             Accent(g, Rectangle.Round(ind), 12);
 
-            DrawTab(g, homeTab, "Главная", "home", path.Count == 0 && ind == (RectangleF)target, Equals(hover, homeTab));
+            // Подпись белеет по мере того, как плашка наезжает на вкладку
+            DrawTab(g, homeTab, "Главная", "home", Cover(ind, homeTab), Equals(hover, homeTab));
             for (int i = 0; i < sections.Length; i++)
             {
                 var s = sections[i];
-                DrawTab(g, SectionTab(i), Short(s.Text), Icon_(s), i == active && ind == (RectangleF)target, hover == s);
+                var r = SectionTab(i);
+                float a = Cover(ind, r);
+                DrawTab(g, r, Short(s.Text), Icon_(s), a, hover == s);
             }
-            DrawTab(g, ExitTab, exit.Text, "exit", false, hover == exit);
+            DrawTab(g, ExitTab, exit.Text, "exit", 0f, hover == exit);
+        }
+
+        // Какая доля вкладки накрыта плашкой: 0 - не накрыта, 1 - целиком
+        static float Cover(RectangleF ind, Rectangle tab)
+        {
+            float top = Math.Max(ind.Top, tab.Top), bottom = Math.Min(ind.Bottom, tab.Bottom);
+            return bottom <= top ? 0f : Math.Min(1f, (bottom - top) / tab.Height);
         }
 
         // Статус в шапке рядом с заголовком: точка и текст. Виден на любой странице
@@ -904,11 +923,11 @@ namespace ZapretTray
         }
 
         // Вкладка полосы: значок сверху, подпись под ним. Подсветку выбранной рисует DrawSidebar, она переезжает
-        void DrawTab(Graphics g, Rectangle r, string text, string icon, bool active, bool hovered, Color? accent = null)
+        void DrawTab(Graphics g, Rectangle r, string text, string icon, float active, bool hovered, Color? accent = null)
         {
-            if (hovered && !active) Box(g, r, P.Hover, 12);
+            if (hovered && active < 0.5f) Box(g, r, P.Hover, 12);
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            var color = active ? Color.White : accent ?? (hovered ? P.Text : P.SubText);
+            var color = Mix(accent ?? (hovered ? P.Text : P.SubText), Color.White, active);
             ThemedRenderer.DrawIcon(g, icon, r.Left + (r.Width - 16) / 2, r.Top + 20, color);
             TextRenderer.DrawText(g, text, RailFont, new Rectangle(r.Left - 4, r.Top + 32, r.Width + 8, 18), color,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
@@ -1497,7 +1516,9 @@ namespace ZapretTray
             cards.Clear();
             var area = ContentArea;
             g.SetClip(area);
-            int y = HeaderHeight, col = 0;
+            // Чуть ниже шапки: иначе шапка срезает верхний край первой карточки
+            const int start = HeaderHeight + 4;
+            int y = start, col = 0;
             foreach (ToolStripItem it in section.DropDownItems)
             {
                 if (it is ToolStripSeparator)
@@ -1505,7 +1526,7 @@ namespace ZapretTray
                     if (col == 1) { col = 0; y += CardHeight + Gap; }
                     var caption = it.Tag as string;
                     if (caption == null) { y += GroupGap; continue; }
-                    if (y > HeaderHeight) y += 6;
+                    if (y > start) y += 6;
                     // Подпись группы заглавными и линия до конца ряда
                     var upper = caption.ToUpper();
                     int captionX = SideWidth + Pad + 2, lineX = captionX + TextRenderer.MeasureText(upper, MenuKit.Small).Width + 6;
@@ -1521,7 +1542,7 @@ namespace ZapretTray
                 if (col == 2) { col = 0; y += CardHeight + Gap; }
             }
             if (col == 1) y += CardHeight + Gap;
-            contentHeight = y - HeaderHeight + Pad;
+            contentHeight = y - HeaderHeight + Pad;   // запас сверху входит в высоту
             scroll = Math.Min(scroll, MaxScroll);
             g.ResetClip();
 
