@@ -63,10 +63,16 @@ namespace ZapretTray
         bool updating;
         Updater.Release appUpdate;    // найденная новая версия программы: показываем кнопку "Обновить до ..."
         string updateNotified;        // про какую версию уже предупредили, чтобы не повторяться
+        Updater.Release coreUpdate;   // найденные новые конфиги zapret, которые ждут "Обновить"
+        string updateNote;            // итог последней проверки по кнопке: "Всё свежее" или "нет связи"
+        ToolStripMenuItem troubleItem;
+        ToolStripMenuItem[] updateModeItems;
+        // Что делать с новой версией. Одна настройка и для программы, и для конфигов zapret
+        const string UpdateAsk = "ask", UpdateAuto = "auto", UpdateManual = "manual";
 
         InfoItem statusItem, healthItem, statsItem;
-        ToolStripMenuItem toggleItem, repairItem, fastItem, bestItem, manualItem;
-        ToolStripMenuItem scaleItem, bugItem, sitesItem, checksItem, reportItem, settingsItem, themeItem, autoupdateItem, notifyItem, updateItem, updateNowItem, dnsFixItem, dnsUndoItem;
+        ToolStripMenuItem toggleItem, fastItem, bestItem, manualItem;
+        ToolStripMenuItem scaleItem, bugItem, sitesItem, checksItem, reportItem, settingsItem, themeItem, notifyItem, updateItem, updateNowItem, dnsFixItem, dnsUndoItem;
         CheckStore checks;
         bool dnsBusy, dnsAutoTried, watchVpnLogged;
 
@@ -259,29 +265,21 @@ namespace ZapretTray
             healthItem = Info("", ItemKind.Health);
             statsItem = Info("", ItemKind.Stats);
 
-            gamesItem = MenuKit.Icon(Item("Мои приложения", null), "games");
+            gamesItem = MenuKit.Icon(Item("Мои игры", null), "games");
 
             fastItem = MenuKit.Icon(Item("Подобрать конфиг заново", (s, e) => UserSelect("fast")), "fast", "Если сайт или игра перестали открываться");
             bestItem = MenuKit.Icon(Item("Подобрать конфиг с лучшим пингом", (s, e) => UserSelect("best")), "ping", "Проверит все и выберет быстрый, это дольше");
             manualItem = MenuKit.Icon(Item("Выбрать конфиг вручную", null), "list", "Если знаешь, какой нужен");
             sitesItem = MenuKit.Icon(Item("Мои сайты...", (s, e) => OpenSites()), "sites");
-            checksItem = MenuKit.Icon(Item("Проверки", null), "ping");
-            reportItem = MenuKit.Icon(Item("Что-то не работает", (s, e) => MakeReport()), "report", "Скопирует отчёт, вставь его в чат");
+            checksItem = MenuKit.Icon(Item("Обязательные проверки", null), "ping", "Под какие сайты подбирать конфиг");
+            reportItem = MenuKit.Icon(Item("Скопировать отчёт", (s, e) => MakeReport()), "report", "Скопирует отчёт, вставь его в чат");
             dnsFixItem = MenuKit.Icon(Item("Исправить DNS", (s, e) => ApplyDnsFix()), "dns", "Если YouTube не находится");
             dnsUndoItem = MenuKit.Icon(Item("Вернуть DNS как было", (s, e) => UndoDnsFix()), "undo", "Настройки DNS станут как раньше");
 
-            // Всё, что нужно только при поломке
-            repairItem = MenuKit.Icon(Item("Подключение", null), "connection");
-            repairItem.DropDownItems.AddRange(new ToolStripItem[] {
-                MenuKit.Sep("Конфиг"), fastItem, bestItem, manualItem,
-                MenuKit.Sep("DNS"), dnsFixItem, dnsUndoItem,
-                MenuKit.Sep("Не помогло"), reportItem
-            });
             if (BugReport.Available)
-            {
                 bugItem = MenuKit.Icon(Item("Отправить баг", (s, e) => SendBug()), "load", "Отчёт сам уйдёт разработчику");
-                repairItem.DropDownItems.Add(bugItem);
-            }
+            // Номер, отчёт и баг - одна карточка: всё это нужно, когда что-то сломалось
+            troubleItem = MenuKit.Icon(Item("Что-то не работает", (s, e) => CopyMachineId()), "report", "Твой номер " + BugReport.MachineId(settings) + " · нажми, чтобы скопировать");
 
             // Настройки
             settingsItem = MenuKit.Icon(Item("Настройки", null), "settings");
@@ -306,42 +304,52 @@ namespace ZapretTray
             autostartItem = MenuKit.Icon(Item("Запускать вместе с Windows", null), "play", "Включается сама при входе");
             autostartItem.CheckOnClick = true;
             autostartItem.Click += (s, e) => SetAutostart(autostartItem.Checked);
-            autoupdateItem = MenuKit.Icon(Check("Обновляться автоматически", "autoupdate"), "refresh", "Новые конфиги zapret ставит сама, новую версию программы - по кнопке");
+            // Что делать с новой версией: спросить, поставить самой или ждать кнопки. Одна настройка и для программы, и для конфигов zapret
+            updateModeItems = new[] {
+                Tuple.Create(UpdateAsk, "Спрашивать"), Tuple.Create(UpdateAuto, "Сама"), Tuple.Create(UpdateManual, "Вручную")
+            }.Select(m => { var mode = m.Item1; var it = MenuKit.Icon(Item(m.Item2, (s, e) => SetUpdateMode(mode)), "refresh"); it.Tag = mode; return it; }).ToArray();
+            updateModeItems[0].ToolTipText = "Новая версия:";
             notifyItem = MenuKit.Icon(Check("Уведомления", "notify"), "bell", "Важные придут в любом случае");
 
             // Галочки "как программа себя ведёт" - отдельной группой
-            behaviorItem = MenuKit.Icon(Item("Поведение", null), "config", "Сторож, автозапуск, обновления");
-            behaviorItem.DropDownItems.AddRange(new ToolStripItem[] { watchdogItem, autostartItem, autoupdateItem, notifyItem });
-            updateItem = MenuKit.Icon(Item("Проверить обновления", (s, e) => CheckUpdate(true)), "refresh");
-            // Появляется рядом с версией, когда вышла новая: пользователь сам нажимает "Обновить до ..."
-            updateNowItem = MenuKit.Icon(Item("Обновить", (s, e) => { if (appUpdate != null) InstallAppUpdate(appUpdate, true); }), "load", "Скачает и поставит новую версию, zapret перезапустится сам");
-            settingsItem.DropDownItems.AddRange(new ToolStripItem[] {
-                // Все карточки парами, чтобы в рядах не было дыр
-                MenuKit.Sep("Вид"), themeItem, scaleItem, MenuKit.Sep("Работа"), behaviorItem, updateItem,
-                MenuKit.Icon(Item("Обязательные проверки", (s, e) => { if (panel != null) panel.OpenByName("Проверки"); }), "ping", "Под какие сайты подбирать конфиг"),
+            behaviorItem = MenuKit.Icon(Item("Поведение", null), "config", "Сторож, автозапуск, уведомления");
+            behaviorItem.DropDownItems.AddRange(new ToolStripItem[] { watchdogItem, autostartItem, notifyItem });
+            // Карточка версии: нажатие проверяет, а если новая уже нашлась - спрашивает, ставить ли
+            updateItem = MenuKit.Icon(Item("Версия " + AppInfo.Version, (s, e) => UpdateAction()), "refresh");
+            updateNowItem = MenuKit.Icon(Item("Проверить", (s, e) => UpdateAction()), "refresh");
+            hintsItem = MenuKit.Icon(Item("Подсказки", (s, e) => OpenHints()), "hints", "Что делать, если что-то не работает");
+            var settingsItems = new List<ToolStripItem> {
+                // Все карточки парами, чтобы в рядах не было дыр. Широкие карточки - во всю строку
+                MenuKit.Sep("Обновления"), updateItem };
+            settingsItems.AddRange(updateModeItems);
+            settingsItems.AddRange(new ToolStripItem[] {
+                MenuKit.Sep("Подключение"), fastItem, bestItem, dnsFixItem, dnsUndoItem, manualItem,
+                MenuKit.Sep("Помощь"), hintsItem, troubleItem, reportItem });
+            if (bugItem != null) settingsItems.Add(bugItem);
+            settingsItems.AddRange(new ToolStripItem[] {
+                MenuKit.Sep("Вид"), themeItem, scaleItem,
+                MenuKit.Sep("Работа"), behaviorItem, checksItem,
                 MenuKit.Sep("Перенос настроек"),
                 MenuKit.Icon(Item("Сохранить настройки...", (s, e) => SaveSettings()), "save", "В файл, чтобы взять на другой компьютер"),
-                MenuKit.Icon(Item("Подгрузить настройки...", (s, e) => LoadSettings()), "load", "Взять из сохранённого файла"), MenuKit.Sep("Программа"),
-                MenuKit.Icon(Item("Твой номер: " + BugReport.MachineId(settings), (s, e) => CopyMachineId()), "report", "Нажми, чтобы скопировать. По нему видно, чей баг"),
+                MenuKit.Icon(Item("Подгрузить настройки...", (s, e) => LoadSettings()), "load", "Взять из сохранённого файла"),
+                MenuKit.Sep("Программа"),
                 MenuKit.Icon(Item("Открыть папку", (s, e) => Process.Start("explorer.exe", "\"" + paths.Root + "\"")), "folder", "Файлы и журнал программы"),
                 MenuKit.Icon(Item("Удалить программу...", (s, e) => Uninstall()), "trash", "Сначала спросит подтверждение")
             });
+            settingsItem.DropDownItems.AddRange(settingsItems.ToArray());
 
             toggleItem = MenuKit.Icon(Item("Выключить", (s, e) => Toggle()), "power");
-            hintsItem = MenuKit.Icon(Item("Подсказки...", (s, e) => OpenHints()), "hints");
             exitItem = MenuKit.Icon(Item("Выход", (s, e) => ExitApp()), "exit", "Закрыть программу, zapret выключится");
 
             menu.Items.AddRange(new ToolStripItem[] {
                 statusItem, healthItem, statsItem, MenuKit.Sep(),
                 gamesItem, sitesItem, MenuKit.Sep(),
-                repairItem, settingsItem,
-                hintsItem, MenuKit.Sep(),
+                settingsItem, MenuKit.Sep(),
                 toggleItem,
                 exitItem
             });
 
             MenuKit.SubMenu(gamesItem, MenuKit.GamesWidth);
-            MenuKit.SubMenu(repairItem, MenuKit.RepairWidth);
             MenuKit.SubMenu(manualItem, MenuKit.ManualWidth);
             MenuKit.SubMenu(settingsItem, MenuKit.SettingsWidth);
             MenuKit.SubMenu(themeItem, MenuKit.ThemeWidth);
@@ -367,7 +375,7 @@ namespace ZapretTray
             try
             {
                 panel = new ControlPanel(statusItem, healthItem, statsItem, () => renderer.StatusColor, () => youtubeTime + "\t" + discordTime + "\t" + GameTimes() + "\t" + sitesTime,
-                    new[] { gamesItem, sitesItem, repairItem, checksItem, settingsItem, hintsItem }, new[] { fastItem, bugItem ?? reportItem }, toggleItem, exitItem, () => { RefreshMenu(); },
+                    new[] { gamesItem, sitesItem, settingsItem }, new[] { fastItem, bugItem ?? reportItem }, toggleItem, exitItem, () => { RefreshMenu(); },
                     new Dictionary<ToolStripMenuItem, IPanelView>
                     {
                         { sitesItem, new SitesView(MySites,
@@ -386,6 +394,21 @@ namespace ZapretTray
                 panel.TileHistory = i => history[i].ToArray();
                 panel.TileTimes = i => historyAt[i].ToArray();
                 panel.ScaleItem = scaleItem;
+                // Настройки одной страницей: что во всю ширину, какие кнопки в карточках, что только для запасного меню
+                panel.Wide.Add(updateItem);
+                panel.Wide.Add(troubleItem);
+                panel.Wide.Add(hintsItem);
+                panel.Segments[updateItem] = updateModeItems;
+                panel.Buttons[updateItem] = new[] { updateNowItem };
+                panel.Buttons[troubleItem] = bugItem != null ? new[] { reportItem, bugItem } : new[] { reportItem };
+                panel.Hidden.Add(manualItem);
+                panel.Hidden.Add(reportItem);
+                if (bugItem != null) panel.Hidden.Add(bugItem);
+                foreach (var m in updateModeItems) panel.Hidden.Add(m);
+                panel.HasUpdate = () => appUpdate != null;
+                // Плашка «Работает · ALT» раскрывает конфиги, под ними подбор и выключение
+                panel.ConfigMenu = manualItem;
+                panel.PillActions = new[] { fastItem, bestItem, toggleItem };
                 panel.ScaleChanged = value => SetScale(value.ToString());
                 panel.ToggleTheme = () => { SetTheme(Theme.Current == Palette.Dark ? Theme.Light : Theme.Dark); RefreshMenu(); };
                 // Плитки 0-3: сервисы. 4, 5, 6: скорость, пинг, время работы
@@ -455,15 +478,16 @@ namespace ZapretTray
             dnsFixItem.Enabled = !dnsApplied && !dnsBusy;
             dnsUndoItem.Enabled = dnsApplied && !dnsBusy;
             autostartItem.Checked = Tasks.IsEnabled(AppInfo.AutoTask);
-            updateItem.Text = "Проверить обновления (сейчас " + AppInfo.Version + ", zapret " + ZapretUpdater.LocalVersion(paths) + ")";
-            // Кнопка "Обновить до X.Y" стоит сразу под строкой с версией, только когда есть что ставить
-            settingsItem.DropDownItems.Remove(updateNowItem);
-            if (appUpdate != null)
-            {
-                updateNowItem.Text = "Обновить до " + appUpdate.Version;
-                int idx = settingsItem.DropDownItems.IndexOf(updateItem);
-                if (idx >= 0) settingsItem.DropDownItems.Insert(idx + 1, updateNowItem);
-            }
+            // Карточка версии: что стоит и что нашлось. Кнопка справа - "Проверить" или "Обновить"
+            updateItem.Text = "Версия " + AppInfo.Version + (appUpdate != null ? " → " + appUpdate.Version : "");
+            updateItem.ToolTipText = updating ? "Проверяю…"
+                : appUpdate != null ? "Вышла новая. Без тебя не поставлю"
+                : coreUpdate != null ? "Вышли конфиги zapret " + coreUpdate.Version + ". Без тебя не поставлю"
+                : updateNote ?? ("zapret " + ZapretUpdater.LocalVersion(paths));
+            updateNowItem.Text = appUpdate != null || coreUpdate != null ? "Обновить" : "Проверить";
+            updateNowItem.Enabled = !updating;
+            var mode = UpdateMode();
+            foreach (var m in updateModeItems) m.Checked = (string)m.Tag == mode;
             foreach (ToolStripMenuItem t in themeItem.DropDownItems) t.Checked = (string)t.Tag == Theme.Mode;
             foreach (ToolStripMenuItem t in scaleItem.DropDownItems) t.Checked = (string)t.Tag == (settings.Get("scale") ?? "100");
 
@@ -496,7 +520,7 @@ namespace ZapretTray
                 gamesItem.DropDownItems.Add(item);
             }
 
-            if (games.Games.Count > 0) gamesItem.DropDownItems.Add(MenuKit.Sep("Твои приложения"));
+            if (games.Games.Count > 0) gamesItem.DropDownItems.Add(MenuKit.Sep("Твои игры"));
             foreach (var g in games.Games.ToList())
             {
                 var game = g;
@@ -1132,7 +1156,7 @@ namespace ZapretTray
         void PickForSite(string url)
         {
             if (!checks.Add(url)) checks.SetRequired(CheckStore.Normalize(url), true);
-            Notify("Подбираю конфиг под " + url.Replace("https://", "") + ". Сайт теперь в обязательных проверках (раздел «Проверки»).", ToolTipIcon.Info, true);
+            Notify("Подбираю конфиг под " + url.Replace("https://", "") + ". Сайт теперь в обязательных проверках («Настройки» → «Обязательные проверки»).", ToolTipIcon.Info, true);
             UserSelect("fast");
         }
 
@@ -1249,7 +1273,7 @@ namespace ZapretTray
                 else if (BugReport.Available)
                     Offer("Не могу найти рабочий конфиг" + (error != null ? ": " + error : "") + ".\nНажми, чтобы отправить баг разработчику.", SendBug);
                 else
-                    Notify("Не могу найти рабочий конфиг" + (error != null ? ": " + error : "") + ".\nПопробуй «Подключение» → «Что-то не работает».", ToolTipIcon.Warning);
+                    Notify("Не могу найти рабочий конфиг" + (error != null ? ": " + error : "") + ".\nПопробуй «Настройки» → «Что-то не работает».", ToolTipIcon.Warning);
             }));
         }
 
@@ -1629,7 +1653,7 @@ namespace ZapretTray
                     { SettingsFile.Theme, Theme.Mode },
                     { SettingsFile.Watchdog, watchdogItem.Checked ? "1" : "0" },
                     { SettingsFile.Autostart, Tasks.IsEnabled(AppInfo.AutoTask) ? "1" : "0" },
-                    { SettingsFile.Autoupdate, autoupdateItem.Checked ? "1" : "0" },
+                    { SettingsFile.Autoupdate, UpdateMode() == UpdateAuto ? "1" : "0" },
                     { SettingsFile.Notify, notifyItem.Checked ? "1" : "0" }
                 };
                 try
@@ -1673,7 +1697,7 @@ namespace ZapretTray
             string v;
             if (values.TryGetValue(SettingsFile.Theme, out v) && (v == Theme.System || v == Theme.Light || v == Theme.Dark)) SetTheme(v);
             if (values.TryGetValue(SettingsFile.Watchdog, out v)) watchdogItem.Checked = v == "1";
-            if (values.TryGetValue(SettingsFile.Autoupdate, out v)) autoupdateItem.Checked = v == "1";
+            if (values.TryGetValue(SettingsFile.Autoupdate, out v)) settings.Set("update_mode", v == "1" ? UpdateAuto : UpdateAsk);
             if (values.TryGetValue(SettingsFile.Notify, out v)) notifyItem.Checked = v == "1";
             if (values.TryGetValue(SettingsFile.Autostart, out v)) SetAutostart(v == "1");
         }
@@ -1707,7 +1731,7 @@ namespace ZapretTray
                 }
                 Notify("YouTube не находился: провайдер подменяет DNS. Включил защищённый DNS"
                     + (DnsFix.WindowsBuild() < 22000 ? " в Chrome, Edge и Firefox: закрой браузер полностью и открой заново." : ".")
-                    + "\nВернуть: «Подключение» → «Вернуть DNS как было».", ToolTipIcon.Info, true);
+                    + "\nВернуть: «Настройки» → «Вернуть DNS как было».", ToolTipIcon.Info, true);
                 RecheckHealthNow();
                 RefreshMenu();
             }));
@@ -2155,17 +2179,64 @@ namespace ZapretTray
 
         // ---------- обновления ----------
 
-        // manual - нажали в меню: проверяем сразу и говорим результат; иначе - тихо и не чаще раза в сутки
+        // Режим обновлений. Раньше была галочка "Обновляться автоматически" (только про конфиги zapret): её больше нет, спрашиваем
+        string UpdateMode()
+        {
+            var m = settings.Get("update_mode");
+            if (m == UpdateAuto || m == UpdateManual || m == UpdateAsk) return m;
+            // Ещё не выбирали: при установке сняли "Проверять обновления" - только вручную, иначе спрашиваем
+            return settings.Get("autoupdate") == "0" ? UpdateManual : UpdateAsk;
+        }
+
+        void SetUpdateMode(string mode)
+        {
+            settings.Set("update_mode", mode);
+            Logger.Write("обновления: режим " + mode);
+            RefreshMenu();
+            if (panel != null) panel.Invalidate();
+        }
+
+        // Кнопка в карточке версии: нашлось - ставим (это и есть согласие), не нашлось - проверяем
+        void UpdateAction()
+        {
+            if (appUpdate != null) InstallAppUpdate(appUpdate, true);
+            else if (coreUpdate != null) { var core = coreUpdate; coreUpdate = null; InstallZapretUpdate(core, true); }
+            else CheckUpdate(true);
+        }
+
+        // Вышла новая версия, а режим "Спрашивать": окно с вопросом. Пропущенную версию больше не предлагаем
+        void AskAppUpdate(Updater.Release app)
+        {
+            if (settings.Get("app_skip") == app.Version) return;
+            var answer = WhatsNewDialog.AskUpdate(app.Version, AppInfo.Version);
+            Logger.Write("обновление " + app.Version + ": ответ " + answer);
+            if (answer == WhatsNewDialog.Answer.Install) InstallAppUpdate(app, true);
+            else if (answer == WhatsNewDialog.Answer.Skip)
+            {
+                settings.Set("app_skip", app.Version);
+                appUpdate = null;
+                RefreshMenu();
+                if (panel != null) panel.Invalidate();
+            }
+        }
+
+        // manual - нажали "Проверить": проверяем сразу, нашлось - кнопка "Обновить", сами не ставим.
+        // Иначе - тихо, раз в полчаса, и дальше по режиму: спросить, поставить самой или ничего
         void CheckUpdate(bool manual)
         {
             if (updating) return;
+            var mode = UpdateMode();
             if (!manual)
             {
+                if (mode == UpdateManual) return;
                 long last;
                 if (long.TryParse(settings.Get("update_check"), out last) && DateTime.UtcNow.Ticks - last < TimeSpan.FromMinutes(25).Ticks) return;
                 if (busy) return;   // не мешаем подбору конфига, попробуем в следующий раз
             }
             updating = true;
+            updateNote = null;
+            RefreshMenu();
+            if (panel != null) panel.Invalidate();
             var localZapret = ZapretUpdater.LocalVersion(paths);
             Task.Factory.StartNew(() => Tuple.Create(Updater.GetLatest(), Updater.GetLatest(ZapretUpdater.Repo)))
             .ContinueWith(t => OnUi(() =>
@@ -2174,31 +2245,47 @@ namespace ZapretTray
                 var app = t.Result.Item1;
                 var core = t.Result.Item2;
                 if (app != null || core != null) settings.Set("update_check", DateTime.UtcNow.Ticks.ToString());
-                bool auto = autoupdateItem.Checked || manual;
+                bool gameRunning = runningGame != null;
 
-                // Сама программа: не ставим молча - показываем кнопку "Обновить до X.Y" у версии, нажимает пользователь
-                if (app != null && Updater.IsNewer(app.Version, AppInfo.Version))
+                // Сама программа
+                if (app != null && Updater.IsNewer(app.Version, AppInfo.Version) && (manual || settings.Get("app_skip") != app.Version))
                 {
                     appUpdate = app;
                     RefreshMenu();
                     if (panel != null) panel.Invalidate();
-                    if (updateNotified != app.Version)
+                    if (manual) return;   // нажал "Проверить" - дальше нажмёт "Обновить" сам
+                    if (mode == UpdateAuto && !gameRunning) { InstallAppUpdate(app, false); return; }
+                    if (mode == UpdateAsk && updateNotified != app.Version)
                     {
                         updateNotified = app.Version;
-                        Notify("Вышла новая версия " + app.Version + ". Открой «Настройки» и нажми «Обновить до " + app.Version + "».", ToolTipIcon.Info, true);
+                        // Открыто окно - спрашиваем сразу. Нет - уведомление, по нажатию тот же вопрос
+                        if (panel != null && panel.Visible) AskAppUpdate(app);
+                        else Offer("Вышла версия " + app.Version + ". Нажми, чтобы обновить.", () => AskAppUpdate(app));
                     }
                     return;
                 }
+                // Конфиги zapret
                 if (core != null && Updater.IsNewer(core.Version, localZapret) && (manual || core.Version != settings.Get("zapret_skip")))
                 {
-                    if (auto) InstallZapretUpdate(core, manual);
-                    else Offer("Вышли новые конфиги zapret " + core.Version + ". Нажми, чтобы обновить.", () => InstallZapretUpdate(core, true));
+                    if (manual || mode == UpdateAsk)
+                    {
+                        coreUpdate = core;
+                        RefreshMenu();
+                        if (panel != null) panel.Invalidate();
+                        if (!manual && updateNotified != "zapret " + core.Version)
+                        {
+                            updateNotified = "zapret " + core.Version;
+                            Offer("Вышли новые конфиги zapret " + core.Version + ". Нажми, чтобы поставить.", () => { coreUpdate = null; InstallZapretUpdate(core, true); });
+                        }
+                    }
+                    else if (mode == UpdateAuto && !gameRunning) InstallZapretUpdate(core, false);
                     return;
                 }
                 if (manual)
                 {
-                    Notify(app == null && core == null ? "Не получилось проверить обновления - нет связи с GitHub."
-                        : "Всё свежее: программа " + AppInfo.Version + ", zapret " + localZapret + ".", ToolTipIcon.Info, true);
+                    updateNote = app == null && core == null ? "Не получилось проверить: нет связи с GitHub" : "Всё свежее · zapret " + localZapret;
+                    RefreshMenu();
+                    if (panel != null) panel.Invalidate();
                 }
             }));
         }

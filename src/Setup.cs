@@ -220,6 +220,21 @@ namespace ZapretTray
         }
 
         // Копирование с сохранением файлов пользователя при переустановке
+        static bool SameFile(string a, string b)
+        {
+            try
+            {
+                var fa = new FileInfo(a);
+                var fb = new FileInfo(b);
+                if (!fb.Exists || fa.Length != fb.Length) return false;
+                var x = File.ReadAllBytes(a);
+                var y = File.ReadAllBytes(b);
+                for (int i = 0; i < x.Length; i++) if (x[i] != y[i]) return false;
+                return true;
+            }
+            catch { return false; }
+        }
+
         public static void CopyFiles(string target)
         {
             // Setup.exe запущен из самой установленной папки - копировать нечего
@@ -250,6 +265,9 @@ namespace ZapretTray
                     continue;
                 }
                 Directory.CreateDirectory(Path.GetDirectoryName(dst));
+                // Такой же файл уже стоит - не трогаем. Загруженный драйвер WinDivert держит свой .sys занятым,
+                // даже когда winws погашен, и обновление падало на нём на полпути
+                if (SameFile(file, dst)) continue;
                 File.Copy(file, dst, true);
             }
             // Лишнее из прошлых версий: программа это не использует, а антивирусы на такие скрипты ругаются
@@ -578,7 +596,7 @@ namespace ZapretTray
             autostartBox = AddRow("Запускать вместе с Windows", true, ref y);
             desktopBox = AddRow("Ярлык на рабочем столе", true, ref y);
             watchdogBox = AddRow("Сам чинить, если перестало работать", true, ref y);
-            autoupdateBox = AddRow("Обновляться автоматически", true, ref y);
+            autoupdateBox = AddRow("Проверять обновления", true, ref y);
             y += 12;
 
             bool hasService = Util.ServiceExists("zapret");

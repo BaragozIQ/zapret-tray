@@ -37,48 +37,48 @@ namespace ZapretTray
                 "Мои сайты", "Впиши сайт или IP", "Добавить"),
             new Hint("undo", Orange, "Сайт сломался от программы", "Сайт останется в списке, но обходить его программа больше не будет.",
                 "Мои сайты", "Выключи переключатель у сайта"),
-            new Hint("ping", Teal, "Всё лагает", "Проверка всех конфигов занимает пару минут. Жди, пока Z снова станет зелёным.",
-                "Подключение", "Подобрать конфиг с лучшим пингом"),
-            new Hint("games", Green, "Лагает игра", "Пока игра запущена, на главной в плитке «Приложения» виден её пинг.",
-                "Мои приложения", "Добавить из установленных", "Запусти игру"),
-            new Hint("games", Orange, "Хрипит голос в игре", "Вход в игру останется через обход, а голос и сам матч пойдут напрямую. Игра - в разделе «Твои приложения», не во «Встроенных играх». Потом перезайди в матч.",
-                "Мои приложения", "Нажми на игру", "Голос и матч напрямую"),
+            new Hint("ping", Teal, "Всё лагает", "Проверка всех конфигов занимает пару минут. Жди, пока Z снова станет зелёным. То же есть в списке под «Работает» сверху окна.",
+                "Настройки", "Подобрать конфиг с лучшим пингом"),
+            new Hint("games", Green, "Лагает игра", "Пока игра запущена, на главной в плитке «Игры» виден её пинг.",
+                "Мои игры", "Добавить из установленных", "Запусти игру"),
+            new Hint("games", Orange, "Хрипит голос в игре", "Вход в игру останется через обход, а голос и сам матч пойдут напрямую. Игра - в списке «Твои игры», не во «Встроенных играх». Потом перезайди в матч.",
+                "Мои игры", "Нажми на игру", "Голос и матч напрямую"),
             new Hint("dns", Purple, "Крестик у YouTube", "Не помогло - там же нажми «Исправить DNS». Обычно программа делает это сама.",
-                "Подключение", "Подобрать конфиг заново"),
+                "Настройки", "Подобрать конфиг заново"),
             new Hint("undo", Purple, "Стало хуже после DNS", "Настройки DNS станут ровно такими, какими были до исправления.",
-                "Подключение", "Вернуть DNS как было"),
+                "Настройки", "Вернуть DNS как было"),
             new Hint("shield", Slate, "Включён VPN", "С VPN плитки на главной показывают сеть VPN, а не работу zapret.",
                 "Выключи VPN"),
-            new Hint("load", Red, "Ничего не понятно", "Отчёт сам уйдёт разработчику. Твоих личных данных в нём нет. Хочешь ответ — впиши ник и как с тобой связаться.",
+            new Hint("load", Red, "Ничего не понятно", "Отчёт сам уйдёт разработчику, личных данных в нём нет. То же в «Настройках» → «Что-то не работает»: там твой номер и «Скопировать отчёт».",
                 "Главная", "Отправить баг")
         };
 
         static readonly Hint[] Setup =
         {
-            new Hint("list", Teal, "Выбрать конфиг самому", "В списке галочка стоит у конфига, который работает сейчас.",
-                "Подключение", "Выбрать конфиг вручную"),
-            new Hint("ping", Teal, "Под какие сайты подбирать", "Обязательные (галочка) — под них ищется конфиг. Остальные просто проверяются. Можно добавить свой сайт.",
-                "Проверки", "Отметь обязательные"),
-            new Hint("plus", Green, "Добавить своё приложение", "Три способа: из установленных, запущенное или указать файл. Значок приложения подтянется сам.",
-                "Мои приложения", "Добавить из установленных"),
+            new Hint("list", Teal, "Выбрать конфиг самому", "Галочка стоит у конфига, который работает сейчас. Там же «Подобрать конфиг заново».",
+                "Главная", "Нажми «Работает» сверху", "Выбери конфиг"),
+            new Hint("ping", Teal, "Под какие сайты подбирать", "Обязательные (переключатель включён) — под них ищется конфиг. Остальные просто проверяются. Можно добавить свой сайт.",
+                "Настройки", "Обязательные проверки", "Отметь обязательные"),
+            new Hint("plus", Green, "Добавить свою игру", "Три способа: из установленных, запущенную или указать файл. Подойдёт и любая программа. Значок подтянется сам.",
+                "Мои игры", "Добавить из установленных"),
             new Hint("fast", Orange, "Как пускать новую игру", "Сразу после добавления программа спросит: «Голос и матч напрямую» (советуем, голос не хрипит) или «Всё через обход» (если игра не подключается к матчу). Поменять можно в любой момент.",
-                "Мои приложения", "Нажми на игру", "Голос и матч напрямую"),
+                "Мои игры", "Нажми на игру", "Голос и матч напрямую"),
             new Hint("games", Green, "Встроенные игры", "Клик по игре включает или выключает для неё обход.",
-                "Мои приложения", "ARC Raiders или Wardogs"),
-            new Hint("games", Green, "Выключить или убрать", "«Удалить» стирает и адреса, которые программа собрала для приложения.",
-                "Мои приложения", "Нажми на приложение", "Включена или Удалить"),
+                "Мои игры", "ARC Raiders или Wardogs"),
+            new Hint("games", Green, "Выключить или убрать", "«Удалить» стирает и адреса, которые программа собрала для игры.",
+                "Мои игры", "Нажми на игру", "Включена или Удалить"),
             new Hint("sites", Blue, "Убрать сайт из списка", "Крестик справа в строке сайта.",
                 "Мои сайты", "Нажми ✕"),
             new Hint("theme", Slate, "Тёмная или светлая тема", "Чтобы тема была как в Windows: «Настройки» → «Тема».",
-                "День или Ночь внизу слева"),
-            new Hint("config", Slate, "Сторож и автозапуск", "И уведомления, и автообновление: поставь или убери нужную галочку.",
+                "Луна или солнце вверху справа"),
+            new Hint("config", Slate, "Сторож и автозапуск", "И уведомления: поставь или убери нужную галочку.",
                 "Настройки", "Поведение", "Нужная галочка"),
             new Hint("monitor", Slate, "Окно мелкое или большое", "Ползунок от 75 до 200%. Больше экрана окно не станет.",
                 "Настройки", "Размер окна"),
             new Hint("save", Blue, "Перенести на другой компьютер", "На другом компьютере: «Настройки» → «Подгрузить настройки».",
                 "Настройки", "Сохранить настройки"),
-            new Hint("refresh", Teal, "Обновить прямо сейчас", "Обычно программа обновляется сама, раз в день.",
-                "Настройки", "Проверить обновления"),
+            new Hint("refresh", Teal, "Обновить прямо сейчас", "«Проверить» только ищет. Ставит - лишь когда нажмёшь «Обновить». Рядом выбор: спрашивать, ставить самой или только вручную.",
+                "Настройки", "Версия: «Проверить»", "«Обновить»"),
             new Hint("trash", Red, "Удалить программу", "Сначала спросит. Твои сайты и игры тоже удалятся.",
                 "Настройки", "Удалить программу")
         };
@@ -90,14 +90,14 @@ namespace ZapretTray
             new Hint("list", Teal, "Значки на главной", "Нажми на плитку - она проверится заново. Наведи мышь на график - покажет число."),
             new Hint("shield", Green, "Сама чинит", "Проверяет YouTube и Discord. Сломалось - сменит конфиг или сама исправит DNS."),
             new Hint("list", Teal, "Сама запоминает", "Помнит рабочие конфиги и проверяет их первыми, поэтому включается быстро."),
-            new Hint("refresh", Blue, "Сама обновляется", "Раз в полчаса проверяет обновления. Новую версию ставишь сам кнопкой «Обновить» в «Настройках». Сайты, игры и настройки остаются на месте."),
+            new Hint("refresh", Blue, "Спрашивает про обновления", "Раз в полчаса ищет новую версию и спрашивает, ставить ли. Номер версии - под Z слева. Сайты, игры и настройки остаются на месте."),
             new Hint("bell", Orange, "Когда придёт уведомление", "Только когда сама не справилась, например не нашла рабочий конфиг. Остальное делает молча."),
             new Hint("exit", Red, "Закрыть программу", "Кнопка «Выход» внизу слева. zapret при этом тоже выключится.")
         };
 
         static readonly string[] Tabs = { "Если сломалось", "Настроить", "Что значат значки" };
         // Разделы, которые кнопка внизу подсказки умеет открыть
-        static readonly string[] Sections = { "Главная", "Мои приложения", "Мои сайты", "Подключение", "Проверки", "Настройки" };
+        static readonly string[] Sections = { "Главная", "Мои игры", "Мои сайты", "Настройки", "Обязательные проверки" };
 
         const TextFormatFlags Line = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine;
         const TextFormatFlags Center = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
@@ -139,7 +139,10 @@ namespace ZapretTray
 
         static string Section(Hint h)
         {
-            return h.Steps.Length > 0 && Array.IndexOf(Sections, h.Steps[0]) >= 0 ? h.Steps[0] : null;
+            // Самое глубокое место, куда можно перейти: "Настройки" → "Обязательные проверки" открывает сразу проверки
+            for (int i = h.Steps.Length - 1; i >= 0; i--)
+                if (Array.IndexOf(Sections, h.Steps[i]) >= 0) return h.Steps[i];
+            return null;
         }
 
         // Шаги выезжают по очереди, пока таймер не дойдёт до конца
@@ -171,8 +174,9 @@ namespace ZapretTray
         public void DrawHeader(Graphics g, Rectangle r, Point mouse)
         {
             tabRects.Clear();
-            ControlPanel.PageTitle(g, "Подсказки", TitleFont, r.Left, r.Top - 2, 34, 130);
-            int x = r.Left + 140;
+            int shift = ControlPanel.TitleShift;   // открыто из настроек: слева стрелка назад
+            ControlPanel.PageTitle(g, "Подсказки", TitleFont, r.Left + shift, r.Top - 2, 34, 130);
+            int x = r.Left + shift + 140;
             for (int i = 0; i < Tabs.Length; i++)
             {
                 var tab = new Rectangle(x, r.Top, TextRenderer.MeasureText(g, Tabs[i], MenuKit.Bold).Width + 28, 34);
@@ -748,10 +752,11 @@ namespace ZapretTray
 
         public void DrawHeader(Graphics g, Rectangle r, Point mouse)
         {
-            ControlPanel.PageTitle(g, "Обязательные проверки", TitleFont, r.Left, r.Top - 2, 34, 300);
+            int shift = ControlPanel.TitleShift;   // открыто из настроек: слева стрелка назад
+            ControlPanel.PageTitle(g, "Обязательные проверки", TitleFont, r.Left + shift, r.Top - 2, 34, 300);
             if (entries != null && entries.Count > 0)
             {
-                var count = new Rectangle(r.Left + 304, r.Top + 3, 34, 24);
+                var count = new Rectangle(r.Left + shift + 304, r.Top + 3, 34, 24);
                 ControlPanel.Box(g, count, P.Tile, 8);
                 TextRenderer.DrawText(g, System.Linq.Enumerable.Count(entries, c => c.Required) + "/" + entries.Count, MenuKit.Small, count, P.SubText, Center);
             }
@@ -1139,7 +1144,7 @@ namespace ZapretTray
             Option(g, bypassCard, !Direct, hover == "bypass", "Всё через обход", null,
                 "Выбирай, если с первым вариантом игра не подключается к матчу.");
 
-            TextRenderer.DrawText(g, "Поменять можно потом: «Мои приложения» → «Твои приложения» → нажми на игру.", MenuKit.Small,
+            TextRenderer.DrawText(g, "Поменять можно потом: «Мои игры» → «Твои игры» → нажми на игру.", MenuKit.Small,
                 new Rectangle(Pad, bypassCard.Bottom + 12, W - Pad * 2, 40), P.SubText, Wrap);
 
             // Галочка «Больше не спрашивать»
@@ -1245,6 +1250,11 @@ namespace ZapretTray
 
         static readonly Dictionary<string, Item[]> Notes = new Dictionary<string, Item[]>
         {
+            { "1.1", new[] {
+                new Item("settings", Color.FromArgb(96, 110, 140), "Настройки в одном месте", "Слева теперь только главное, остальное - в «Настройках»"),
+                new Item("list", Color.FromArgb(0, 150, 160), "Конфиг одним нажатием", "Нажми «Работает» вверху окна - откроется список конфигов"),
+                new Item("refresh", Color.FromArgb(46, 160, 67), "Обновления спрашивают", "Новая версия ставится, только когда ты разрешишь"),
+                new Item("report", Color.FromArgb(142, 84, 233), "Если что-то сломалось", "Номер, отчёт и «Отправить баг» - в одной карточке") } },
             { "1.0", new[] {
                 new Item("home", Color.FromArgb(14, 136, 232), "Новый дизайн", "Просторнее, большая кнопка включения и плавные анимации"),
                 new Item("fast", Color.FromArgb(230, 126, 34), "Голос и матч напрямую", "Голос в играх больше не хрипит: переключатель у каждой игры"),
@@ -1269,6 +1279,10 @@ namespace ZapretTray
                 new Item("dns", Color.FromArgb(0, 150, 160), "DNS чинится сам", "Если провайдер подменяет адрес YouTube"),
                 new Item("shield", Color.FromArgb(46, 160, 67), "Спокойнее с VPN", "Конфиг больше не скачет при запуске"),
                 new Item("report", Color.FromArgb(230, 126, 34), "Понятнее отчёт", "Сразу пишет, в чём дело и что нажать") } },
+            { AskStub, new[] {
+                new Item("load", Color.FromArgb(46, 160, 67), "Новая версия программы", "Скачается и проверится подпись разработчика"),
+                new Item("refresh", Color.FromArgb(14, 136, 232), "Всё останется на месте", "Сайты, игры и настройки не пропадут"),
+                new Item("power", Color.FromArgb(230, 126, 34), "zapret перезапустится", "На пару секунд, потом всё заработает само") } },
             { Welcome, new[] {
                 new Item("power", Color.FromArgb(46, 160, 67), "Всё уже работает", "Программа сама подобрала настройки"),
                 new Item("ping", Color.FromArgb(142, 84, 233), "Плитки на главной", "Галочка - открывается. Нажми плитку - проверит заново"),
@@ -1280,10 +1294,38 @@ namespace ZapretTray
 
         public static bool Has(string version) { return Notes.ContainsKey(version); }
 
+        // Вышла новая версия: спросить, ставить ли. Обновить / Позже / Пропустить эту версию
+        public enum Answer { Later, Install, Skip }
+        readonly string current;    // не null - окно вопроса, а не "Что нового"
+        public Answer Result = Answer.Later;
+        Rectangle laterButton, skipButton;
+
+        public static Answer AskUpdate(string version, string current)
+        {
+            using (var d = new WhatsNewDialog(version, current))
+            {
+                d.ShowDialog();
+                return d.Result;
+            }
+        }
+
+        WhatsNewDialog(string version, string current) : this(Notes.ContainsKey(version) ? version : AskStub)
+        {
+            this.version = version;
+            this.current = current;
+            Text = "Вышла новая версия";
+            laterButton = new Rectangle(okButton.Left - 110, okButton.Top, 100, okButton.Height);
+            skipButton = new Rectangle(Pad, okButton.Top, 170, okButton.Height);
+            KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) Result = Answer.Install; };
+        }
+
+        // Нет заметок к этой версии - коротко, что будет
+        const string AskStub = "ask";
+
         const int W = 460, Pad = 20, ListTop = 84, Row = 62;
         static readonly Font TitleFont = new Font("Segoe UI Semibold", 13f), ItemFont = new Font("Segoe UI Semibold", 10.5f);
         readonly Item[] items;
-        readonly string version;
+        string version;
         Rectangle okButton, closeButton;
         string hover;
 
@@ -1325,8 +1367,9 @@ namespace ZapretTray
             ControlPanel.Box(g, new Rectangle(Pad, Pad, 40, 40), Theme.On, 20);
             TextRenderer.DrawText(g, "Z", TitleFont, new Rectangle(Pad, Pad, 40, 40), Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
             bool welcome = version == Welcome;
-            TextRenderer.DrawText(g, welcome ? "Привет! Это Zapret Tray" : "Обновлено до " + version, TitleFont, new Rectangle(Pad + 54, Pad - 2, 330, 26), P.Text, Line);
-            TextRenderer.DrawText(g, welcome ? "Коротко, что тут где" : "Вот что появилось", MenuKit.Small, new Rectangle(Pad + 54, Pad + 22, 300, 20), P.SubText, Line);
+            bool ask = current != null;
+            TextRenderer.DrawText(g, welcome ? "Привет! Это Zapret Tray" : ask ? "Вышла версия " + version : "Обновлено до " + version, TitleFont, new Rectangle(Pad + 54, Pad - 2, 330, 26), P.Text, Line);
+            TextRenderer.DrawText(g, welcome ? "Коротко, что тут где" : ask ? "У тебя " + current + ". Обновить сейчас?" : "Вот что появилось", MenuKit.Small, new Rectangle(Pad + 54, Pad + 22, 300, 20), P.SubText, Line);
 
             if (hover == "close") ControlPanel.Box(g, closeButton, Theme.Bad, 7);
             using (var p = new Pen(hover == "close" ? Color.White : P.SubText, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
@@ -1348,16 +1391,25 @@ namespace ZapretTray
                 TextRenderer.DrawText(g, items[i].Note, MenuKit.Small, new Rectangle(list.Left + 62, y + 31, list.Width - 76, 20), P.SubText, Line);
             }
 
+            const TextFormatFlags Mid = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
             ControlPanel.Accent(g, okButton, 10);
             if (hover == "ok") using (var b = new SolidBrush(Color.FromArgb(40, Color.White))) using (var path = ThemedRenderer.RoundRect(okButton, 10)) g.FillPath(b, path);
-            TextRenderer.DrawText(g, "Понятно", MenuKit.Bold, okButton, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
-            TextRenderer.DrawText(g, "Всё это есть в «Подсказках»", MenuKit.Small, new Rectangle(Pad, okButton.Top, 240, okButton.Height), P.Disabled, Line);
+            TextRenderer.DrawText(g, ask ? "Обновить" : "Понятно", MenuKit.Bold, okButton, Color.White, Mid);
+            if (ask)
+            {
+                ControlPanel.Card(g, laterButton, hover == "later" ? P.Hover : P.Card, 10);
+                TextRenderer.DrawText(g, "Позже", MenuKit.Bold, laterButton, P.Text, Mid);
+                TextRenderer.DrawText(g, "Пропустить эту версию", MenuKit.Small, skipButton, hover == "skip" ? P.Text : P.SubText, Line);
+            }
+            else TextRenderer.DrawText(g, "Всё это есть в «Подсказках»", MenuKit.Small, new Rectangle(Pad, okButton.Top, 240, okButton.Height), P.Disabled, Line);
         }
 
         string HitTest(Point p)
         {
             if (okButton.Contains(p)) return "ok";
             if (closeButton.Contains(p)) return "close";
+            if (current != null && laterButton.Contains(p)) return "later";
+            if (current != null && skipButton.Contains(p)) return "skip";
             return null;
         }
 
@@ -1385,7 +1437,13 @@ namespace ZapretTray
         {
             base.OnMouseDown(e);
             if (e.Button != MouseButtons.Left) return;
-            if (HitTest(e.Location) != null) { Close(); return; }
+            var hit = HitTest(e.Location);
+            if (hit != null)
+            {
+                Result = hit == "ok" ? Answer.Install : hit == "skip" ? Answer.Skip : Answer.Later;
+                Close();
+                return;
+            }
             ReleaseCapture();
             SendMessage(Handle, 0xA1, (IntPtr)2, IntPtr.Zero);
         }

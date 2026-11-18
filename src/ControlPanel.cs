@@ -34,9 +34,30 @@ namespace ZapretTray
         public static readonly int[] ScaleStops = { 75, 90, 100, 115, 125, 150, 175, 200 };
         // Карточка "Размер окна" в настройках рисуется ползунком. Значение применяется, когда отпустил мышь
         public ToolStripMenuItem ScaleItem;
+        // Пункты, которых в окне нет: они нужны только запасному меню (выбор конфига есть в плашке статуса, кнопки - в карточках)
+        public readonly HashSet<ToolStripItem> Hidden = new HashSet<ToolStripItem>();
+        // Карточки во всю ширину: в них кнопки справа
+        public readonly HashSet<ToolStripItem> Wide = new HashSet<ToolStripItem>();
+        // Кнопки справа в карточке (последняя - синяя) и переключатель из нескольких вариантов (выбран тот, у кого галочка)
+        public readonly Dictionary<ToolStripMenuItem, ToolStripMenuItem[]> Buttons = new Dictionary<ToolStripMenuItem, ToolStripMenuItem[]>();
+        public readonly Dictionary<ToolStripMenuItem, ToolStripMenuItem[]> Segments = new Dictionary<ToolStripMenuItem, ToolStripMenuItem[]>();
+        readonly List<KeyValuePair<Rectangle, ToolStripMenuItem>> cardButtons = new List<KeyValuePair<Rectangle, ToolStripMenuItem>>();
+        // Подсказки и проверки открываются из настроек: заголовок у них сдвинут, слева стрелка назад
+        public static int TitleShift;
+        // Вышла новая версия: точка на "Настройках"
+        public Func<bool> HasUpdate;
+        // Плашка статуса раскрывается: конфиги (пункты ConfigMenu, текущий с галочкой) и действия под ними
+        public ToolStripMenuItem ConfigMenu;
+        public ToolStripMenuItem[] PillActions = new ToolStripMenuItem[0];
+        Rectangle pillRect, dropRect;
+        bool pillOpen;
+        readonly List<KeyValuePair<Rectangle, ToolStripMenuItem>> dropRows = new List<KeyValuePair<Rectangle, ToolStripMenuItem>>();
+        public Point PillCenter { get { return new Point(pillRect.Left + pillRect.Width / 2, pillRect.Top + pillRect.Height / 2); } }
+        public bool PillOpen { get { return pillOpen; } }
         public Action<int> ScaleChanged;
         bool scaleCapped;      // окно упёрлось в край экрана: крупнее уже не станет
         int scaleDrag = -1;    // тянут ползунок: какое деление сейчас под мышью
+        int scrollGrab = -1;   // тянут полоску прокрутки: где мышь взялась внутри ползунка, -1 - не тянут
         public float UiScale = 1f;            // итог: масштаб Windows и размер окна, не больше экрана
         public float FontScale = 1f;          // какую часть масштаба шрифтам добавляем сами (остальное даёт DPI)
 
@@ -158,7 +179,8 @@ namespace ZapretTray
             KeyDown += (s, e) =>
             {
                 if (e.KeyCode != Keys.Escape) return;
-                if (path.Count > 1) Back(); else Close();
+                if (pillOpen) { pillOpen = false; Invalidate(); }
+                else if (path.Count > 1) Back(); else Close();
             };
         }
 
@@ -263,6 +285,17 @@ namespace ZapretTray
             base.OnMouseDown(e);
             if (e.Button != MouseButtons.Left) return;
             var hit = HitTest(L(e.Location));
+            if (hit as string == "scrollbar")
+            {
+                var bar = ScrollThumb();
+                int y = L(e.Location).Y;
+                // Мимо ползунка - он прыгает серединой под мышь, дальше тянется
+                scrollGrab = y >= bar.Top && y < bar.Bottom ? y - bar.Top : bar.Height / 2;
+                ScrollTo(y);
+                Capture = true;
+                Invalidate();
+                return;
+            }
             if (hit != null && hit == ScaleItem && ScaleChanged != null)
             {
                 scaleDrag = NearestStop(L(e.Location).X);
@@ -287,6 +320,17 @@ namespace ZapretTray
             if (name == "Главная") { OpenSection(null); Invalidate(); return true; }
             foreach (var s in sections)
                 if (s.Text.TrimEnd('.') == name) { OpenSection(s); Invalidate(); return true; }
+            // Страница внутри раздела: "Подсказки", "Обязательные проверки" в настройках
+            foreach (var s in sections)
+                foreach (ToolStripItem it in s.DropDownItems)
+                    // Только страницы: иначе подсказка нажала бы сам пункт (например, запустила подбор)
+                    if (it is ToolStripMenuItem && views.ContainsKey((ToolStripMenuItem)it) && it.Text.TrimEnd('.') == name)
+                    {
+                        OpenSection(s);
+                        Press((ToolStripMenuItem)it);
+                        Invalidate();
+                        return true;
+                    }
             return false;
         }
 
@@ -304,7 +348,7 @@ namespace ZapretTray
             get
             {
                 IPanelView v;
-                return path.Count > 0 && views.TryGetValue(path[0], out v) ? v : null;
+                return path.Count > 0 && views.TryGetValue(path[path.Count - 1], out v) ? v : null;
             }
         }
 
@@ -335,7 +379,7 @@ namespace ZapretTray
 
         // Где что нажимать: для проверок. Точки в масштабе 100%, действительны после рисования
         static Point Mid(Rectangle r) { return new Point(r.Left + r.Width / 2, r.Top + r.Height / 2); }
-        public Point TileCenter(int i) { return i < tileRects.Length ? new Point(tileRects[i].Left + tileRects[i].Width / 3, tileRects[i].Top + 26) : Point.Empty; }
+        public Point TileCenter(int i) { return i < tileRects.Length ? new Point(tileRects[i].Left + tileRects[i].Width * 3 / 5, tileRects[i].Top + 26) : Point.Empty; }
         public Rectangle TileRect(int i) { return tileRects[i]; }
         public Point HelpCenter { get { return Mid(gameHelp); } }
         public Point ThemeCenter { get { return Mid(ThemeTab); } }
@@ -366,6 +410,16 @@ namespace ZapretTray
 
         object HitTest(Point p)
         {
+            // Открыт список конфигов: он поверх всего, клик мимо его закрывает
+            if (pillOpen)
+            {
+                if (pillRect.Contains(p)) return "pill";
+                if (!dropRect.Contains(p)) return "dropout";
+                foreach (var r in dropRows) if (r.Key.Contains(p)) return r.Value;
+                return "drop";
+            }
+            if (ScrollZone.Contains(p)) return "scrollbar";
+            if (pillRect.Contains(p) && ConfigMenu != null) return "pill";
             if (CloseButton.Contains(p)) return "close";
             if (MinimizeButton.Contains(p)) return "min";
             if (ToggleTheme != null && ThemeTab.Contains(p)) return "theme";
@@ -389,14 +443,25 @@ namespace ZapretTray
                 return null;
             }
             if (ContentArea.Contains(p))
+            {
+                foreach (var c in cardButtons)
+                    if (c.Key.Contains(p.X, p.Y + scroll)) return c.Value;
                 foreach (var c in cards)
                     if (c.Key.Contains(p.X, p.Y + scroll)) return c.Value;
+            }
             return null;
         }
 
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
+            if (scrollGrab >= 0)
+            {
+                scrollGrab = -1;
+                Capture = false;
+                Invalidate();
+                return;
+            }
             if (scaleDrag < 0) return;
             int value = ScaleStops[scaleDrag];
             scaleDrag = -1;
@@ -409,6 +474,12 @@ namespace ZapretTray
         {
             base.OnMouseMove(e);
             mouse = L(e.Location);
+            if (scrollGrab >= 0)
+            {
+                ScrollTo(mouse.Y);
+                Invalidate();
+                return;
+            }
             if (scaleDrag >= 0)
             {
                 int stop = NearestStop(mouse.X);
@@ -447,6 +518,7 @@ namespace ZapretTray
         protected override void OnMouseWheel(MouseEventArgs e)
         {
             base.OnMouseWheel(e);
+            if (pillOpen) return;
             scroll = Math.Max(0, Math.Min(MaxScroll, scroll - e.Delta / 2));
             Invalidate();
         }
@@ -462,7 +534,10 @@ namespace ZapretTray
             if (hit is Rectangle) OpenSection(null);
             else if (hit as string == "close") { Close(); return; }
             else if (hit as string == "min") Hide();
-            else if (hit as string == "help") { }
+            else if (hit as string == "pill") pillOpen = !pillOpen;
+            else if (hit as string == "dropout" || hit as string == "drop") pillOpen = false;
+            else if (pillOpen && hit is ToolStripMenuItem) { pillOpen = false; Press((ToolStripMenuItem)hit); }
+            else if (hit as string == "help" || hit as string == "scrollbar") { }
             else if (hit as string == "theme") ToggleTheme();
             else if (hit as string == "back") Back();
             else if (hit as string == "status") { for (int i = 0; i < 4; i++) if (TileHasResult(i)) StartTileCheck(i); }
@@ -486,7 +561,14 @@ namespace ZapretTray
             if (!item.Enabled) return;
             if (views.ContainsKey(item))
             {
-                OpenSection(item);
+                // Раздел из колонки - заново. Страница из карточки - поверх раздела, со стрелкой назад
+                if (Array.IndexOf(sections, item) >= 0 || path.Count == 0) OpenSection(item);
+                else
+                {
+                    path.Add(item);
+                    scroll = 0;
+                    SyncViews();
+                }
                 return;
             }
             if (item.HasDropDownItems)
@@ -688,6 +770,7 @@ namespace ZapretTray
             DrawStatusPill(g);
             if (ToggleTheme != null) DrawThemeTab(g);
             DrawWindowButtons(g);
+            DrawConfigDrop(g);
             DrawFrame(g);
         }
 
@@ -839,6 +922,9 @@ namespace ZapretTray
             Glow(g, new Rectangle(lx - 12, 4, 58, 58), Theme.On, 80);
             Box(g, new Rectangle(lx, 16, 34, 34), Theme.On, 17);
             TextRenderer.DrawText(g, "Z", valueFont, new Rectangle(lx, 16, 34, 34), Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            // Какая версия стоит - видно всегда
+            TextRenderer.DrawText(g, "v" + AppInfo.Version, RailFont, new Rectangle(0, 51, SideWidth, 16), P.SubText,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
 
             // Подсветка выбранного раздела - одна на всех, переезжает
             int active = -1;
@@ -857,6 +943,15 @@ namespace ZapretTray
                 DrawTab(g, r, Short(s.Text), Icon_(s), a, hover == s);
             }
             DrawTab(g, ExitTab, exit.Text, "exit", 0f, hover == exit);
+            // Вышла новая версия: зелёная точка на "Настройках", пока не обновился
+            if (HasUpdate != null && HasUpdate())
+                for (int i = 0; i < sections.Length; i++)
+                    if (AtBottom(sections[i]))
+                    {
+                        var r = SectionTab(i);
+                        using (var b = new SolidBrush(Mix(P.Back, P.Card, 0.6f))) g.FillEllipse(b, r.Right - 23, r.Top + 6, 12, 12);
+                        using (var b = new SolidBrush(Theme.On)) g.FillEllipse(b, r.Right - 21, r.Top + 8, 8, 8);
+                    }
         }
 
         // Какая доля вкладки накрыта плашкой: 0 - не накрыта, 1 - целиком
@@ -866,17 +961,36 @@ namespace ZapretTray
             return bottom <= top ? 0f : Math.Min(1f, (bottom - top) / tab.Height);
         }
 
-        // Статус в шапке рядом с заголовком: точка и текст. Виден на любой странице
+        // Статус в шапке рядом с заголовком: точка, текст и стрелка. Виден на любой странице, кроме подсказок (там вкладки).
+        // Нажатие раскрывает список конфигов
         void DrawStatusPill(Graphics g)
         {
-            if (CurrentView != null) return;   // у страниц «Сайты», «Проверки», «Помощь» своя шапка
+            pillRect = Rectangle.Empty;
+            var view = CurrentView;
+            if (view is HintsView) { pillOpen = false; return; }
             var parts = status.Value.Split((char)9);
             var text = parts[0] + (parts.Length > 1 && parts[1].Length > 0 ? "  ·  " + parts[1] : "");
-            int x = SideWidth + Pad + 12 + TextRenderer.MeasureText(pageTitle ?? "", titleFont).Width + (path.Count > 1 ? 40 : 0) + 14;
-            int w = Math.Min(TextRenderer.MeasureText(text, MenuKit.Small).Width + 40, ThemeTab.Left - 10 - x);
+            // У "Моих сайтов" и проверок справа от заголовка счётчик
+            int badge = view is SitesView || view is ChecksView ? 50 : 0;
+            int x = SideWidth + Pad + 12 + TextRenderer.MeasureText(pageTitle ?? "", titleFont).Width + (path.Count > 1 ? 40 : 0) + 14 + badge;
+            int w = Math.Min(TextRenderer.MeasureText(text, MenuKit.Small).Width + (ConfigMenu != null ? 58 : 40), ThemeTab.Left - 10 - x);
             if (w < 80) return;
             var r = new Rectangle(x, 16, w, 28);
-            Card(g, r, P.Card, 14);
+            pillRect = r;
+            bool hot = pillOpen || Equals(hover, "pill");
+            Card(g, r, hot ? P.Hover : P.Card, 14, pillOpen ? P.Check : (Color?)null);
+            if (ConfigMenu != null)
+            {
+                // Стрелка вниз, у открытого списка - вверх
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                using (var p = new Pen(P.SubText, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                {
+                    int cx = r.Right - 16, cy = r.Top + r.Height / 2, d = pillOpen ? -1 : 1;
+                    g.DrawLine(p, cx - 4, cy - 2 * d, cx, cy + 2 * d);
+                    g.DrawLine(p, cx, cy + 2 * d, cx + 4, cy - 2 * d);
+                }
+                r.Width -= 18;
+            }
             var color = statusColor();
             Glow(g, new Rectangle(r.Left + 4, r.Top + 1, 26, 26), color, 90);
             using (var b = new SolidBrush(color)) g.FillEllipse(b, r.Left + 12, r.Top + 10, 9, 9);
@@ -884,6 +998,57 @@ namespace ZapretTray
         }
 
         string pageTitle;   // заголовок текущей страницы: по нему статус встаёт справа от него
+
+        // Конфиг из имени файла: "general (ALT11)" - "ALT11"
+        static string ConfigName(string text)
+        {
+            text = text.Trim();
+            int open = text.IndexOf('(');
+            return text.StartsWith("general") && open > 0 && text.EndsWith(")") ? text.Substring(open + 1, text.Length - open - 2) : text;
+        }
+
+        // Список под плашкой: конфиги в две колонки (их около двадцати), текущий с галочкой; ниже действия
+        void DrawConfigDrop(Graphics g)
+        {
+            dropRows.Clear();
+            if (!pillOpen || pillRect.IsEmpty || ConfigMenu == null) { dropRect = Rectangle.Empty; return; }
+            var configs = new List<ToolStripMenuItem>();
+            foreach (ToolStripItem it in ConfigMenu.DropDownItems) if (it is ToolStripMenuItem) configs.Add((ToolStripMenuItem)it);
+            const int w = 420, rowH = 30, actH = 34, padIn = 8;
+            int rows = (configs.Count + 1) / 2;
+            int h = padIn + 24 + rows * rowH + 10 + PillActions.Length * actH + padIn;
+            int x = Math.Min(pillRect.Left, LW - Pad - w), y = pillRect.Bottom + 6;
+            dropRect = new Rectangle(x, y, w, h);
+            // Тень и сама карточка
+            for (int i = 1; i <= 6; i++) using (var b = new SolidBrush(Color.FromArgb(14, 0, 0, 0))) using (var sp = ThemedRenderer.RoundRect(new Rectangle(x - i + 2, y - i + 5, w + 2 * i - 4, h + 2 * i - 4), 12 + i)) g.FillPath(b, sp);
+            Box(g, dropRect, P.Card, 12);
+            using (var pen = new Pen(P.Border)) using (var bp = ThemedRenderer.RoundRect(dropRect, 12)) g.DrawPath(pen, bp);
+            TextRenderer.DrawText(g, "КОНФИГ · НАЖМИ, ЧТОБЫ ПЕРЕКЛЮЧИТЬ", MenuKit.Small, new Rectangle(x + 14, y + padIn, w - 28, 20), P.SubText, Line);
+            int top = y + padIn + 24, colW = (w - 2 * padIn) / 2;
+            for (int i = 0; i < configs.Count; i++)
+            {
+                var c = configs[i];
+                var rr = new Rectangle(x + padIn + (i % 2) * colW, top + (i / 2) * rowH, colW - 4, rowH - 2);
+                dropRows.Add(new KeyValuePair<Rectangle, ToolStripMenuItem>(rr, c));
+                if (c.Checked) Box(g, rr, Mix(P.Card, P.Check, 0.22f), 7);
+                else if (hover == c && c.Enabled) Box(g, rr, P.Hover, 7);
+                if (c.Checked) ThemedRenderer.DrawResult(g, "✓", rr.Left + 14, rr.Top + rr.Height / 2, 10, rr);
+                TextRenderer.DrawText(g, ConfigName(c.Text) + (c.Checked ? "  · сейчас" : ""), c.Checked ? MenuKit.Bold : MenuKit.Font,
+                    new Rectangle(rr.Left + 28, rr.Top, rr.Width - 32, rr.Height), c.Enabled ? P.Text : P.Disabled, Line);
+            }
+            int ay = top + rows * rowH + 4;
+            using (var pen = new Pen(P.Separator)) g.DrawLine(pen, x + 12, ay, x + w - 12, ay);
+            ay += 6;
+            foreach (var a in PillActions)
+            {
+                var rr = new Rectangle(x + padIn, ay, w - 2 * padIn, actH - 2);
+                dropRows.Add(new KeyValuePair<Rectangle, ToolStripMenuItem>(rr, a));
+                if (hover == a && a.Enabled) Box(g, rr, P.Hover, 7);
+                ThemedRenderer.DrawIcon(g, Icon_(a), rr.Left + 8, rr.Top + (rr.Height - 16) / 2, a.Enabled ? P.SubText : P.Disabled);
+                TextRenderer.DrawText(g, a.Text.TrimEnd('.'), MenuKit.Font, new Rectangle(rr.Left + 34, rr.Top, rr.Width - 40, rr.Height), a.Enabled ? P.Text : P.Disabled, Line);
+                ay += actH;
+            }
+        }
 
         // День и ночь: значок показывает, какая тема сейчас, нажатие меняет её
         void DrawThemeTab(Graphics g)
@@ -1149,7 +1314,7 @@ namespace ZapretTray
             TextRenderer.DrawText(g, text, MenuKit.Font, new Rectangle(box.Left + padX, box.Top + padY, size.Width, size.Height), P.Text, flags);
         }
 
-        static readonly string[] ServiceNames = { "YouTube", "Discord", "Приложения", "Мои сайты" };
+        static readonly string[] ServiceNames = { "YouTube", "Discord", "Игры", "Мои сайты" };
         static readonly Color[] ServiceColors = { Color.FromArgb(230, 33, 23), Color.FromArgb(88, 101, 242), Color.FromArgb(240, 136, 30), Color.FromArgb(14, 136, 232) };
         static readonly Color[] NumberColors = { Color.FromArgb(18, 165, 148), Color.FromArgb(142, 84, 233), Color.FromArgb(222, 70, 128) };
 
@@ -1481,13 +1646,16 @@ namespace ZapretTray
         {
             var view = CurrentView;
             var area = ContentArea;
-            pageTitle = path[0].Text.TrimEnd('.');
+            pageTitle = path[path.Count - 1].Text.TrimEnd('.');
             g.SetClip(area);
             contentHeight = view.Draw(g, SideWidth + Pad, area.Top - scroll, mouse) + Pad;
             g.ResetClip();
             scroll = Math.Min(scroll, MaxScroll);
             CoverHeader(g, area);
+            TitleShift = path.Count > 1 ? 40 : 0;
+            if (path.Count > 1) DrawBackButton(g);
             view.DrawHeader(g, new Rectangle(SideWidth + Pad, 14, CardWidth * 2 + Gap, HeaderHeight - 14), mouse);
+            TitleShift = 0;
             DrawScrollBar(g, area);
         }
 
@@ -1502,18 +1670,57 @@ namespace ZapretTray
             g.Restore(state);
         }
 
+        // Ползунок прокрутки в точках 100%: высота по доле видимого, место по прокрутке
+        Rectangle ScrollThumb()
+        {
+            var area = ContentArea;
+            if (MaxScroll <= 0 || contentHeight <= 0) return Rectangle.Empty;
+            int barHeight = Math.Max(30, area.Height * area.Height / contentHeight);
+            int barTop = area.Top + (area.Height - barHeight) * Math.Min(scroll, MaxScroll) / MaxScroll;
+            return new Rectangle(LW - 12, barTop, 10, barHeight);
+        }
+
+        // Где полоску можно взять мышью: полоса у правого края, шире самого ползунка. Только на страницах с прокруткой
+        Rectangle ScrollZone
+        {
+            get
+            {
+                if (path.Count == 0 || MaxScroll <= 0) return Rectangle.Empty;
+                var area = ContentArea;
+                return new Rectangle(LW - 14, area.Top, 14, area.Height);
+            }
+        }
+
+        public Point ScrollThumbCenter { get { var r = ScrollThumb(); return new Point(LW - 7, r.Top + r.Height / 2); } }
+        public int Scroll { get { return scroll; } }
+
+        // Тянут ползунок: верх ползунка идёт за мышью с тем же захватом
+        void ScrollTo(int mouseY)
+        {
+            var area = ContentArea;
+            var bar = ScrollThumb();
+            int track = area.Height - bar.Height;
+            if (track <= 0) return;
+            int top = Math.Max(0, Math.Min(track, mouseY - scrollGrab - area.Top));
+            scroll = (int)Math.Round((double)top * MaxScroll / track);
+        }
+
         void DrawScrollBar(Graphics g, Rectangle area)
         {
-            if (MaxScroll <= 0) return;
-            int barHeight = Math.Max(30, area.Height * area.Height / contentHeight);
-            int barTop = area.Top + (area.Height - barHeight) * scroll / MaxScroll;
-            Box(g, new Rectangle(LW - 8, barTop, 4, barHeight), P.Hover, 2);
+            var bar = ScrollThumb();
+            if (bar.IsEmpty) return;
+            // Под мышью или в руке - толще и ярче, чтобы было видно, что за неё можно взять
+            bool active = scrollGrab >= 0 || ScrollZone.Contains(mouse);
+            int w = active ? 8 : 4;
+            Box(g, new Rectangle(LW - 4 - w, bar.Top, w, bar.Height), active ? Mix(P.Hover, P.SubText, 0.45f) : P.Hover, w / 2);
         }
 
         void DrawSection(Graphics g)
         {
             var section = path[path.Count - 1];
+            scroll = Math.Max(0, Math.Min(scroll, MaxScroll));   // прокрутка из прошлого кадра не дальше конца
             cards.Clear();
+            cardButtons.Clear();
             var area = ContentArea;
             g.SetClip(area);
             // Чуть ниже шапки: иначе шапка срезает верхний край первой карточки
@@ -1536,7 +1743,14 @@ namespace ZapretTray
                     continue;
                 }
                 var item = it as ToolStripMenuItem;
-                if (item == null) continue;
+                if (item == null || Hidden.Contains(item)) continue;
+                if (Wide.Contains(item))
+                {
+                    if (col == 1) { col = 0; y += CardHeight + Gap; }
+                    AddCard(g, item, new Rectangle(SideWidth + Pad, y, CardWidth * 2 + Gap, CardHeight), scroll);
+                    y += CardHeight + Gap;
+                    continue;
+                }
                 AddCard(g, item, new Rectangle(SideWidth + Pad + col * (CardWidth + Gap), y, CardWidth, CardHeight), scroll);
                 col++;
                 if (col == 2) { col = 0; y += CardHeight + Gap; }
@@ -1550,18 +1764,23 @@ namespace ZapretTray
             int titleX = SideWidth + Pad;
             if (path.Count > 1)
             {
-                Card(g, BackButton, Equals(hover, "back") ? P.Hover : P.Card, 8);
-                using (var p = new Pen(P.Text, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-                {
-                    int cx = BackButton.Left + 13, my = BackButton.Top + 15;
-                    g.DrawLine(p, cx + 3, my - 5, cx - 2, my);
-                    g.DrawLine(p, cx - 2, my, cx + 3, my + 5);
-                }
+                DrawBackButton(g);
                 titleX += 40;
             }
             pageTitle = section.Text.TrimEnd('.');
             PageTitle(g, pageTitle, titleFont, titleX, 12, 34, CardWidth * 2 - 40);
             DrawScrollBar(g, area);
+        }
+
+        void DrawBackButton(Graphics g)
+        {
+            Card(g, BackButton, Equals(hover, "back") ? P.Hover : P.Card, 8);
+            using (var p = new Pen(P.Text, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                int cx = BackButton.Left + 13, my = BackButton.Top + 15;
+                g.DrawLine(p, cx + 3, my - 5, cx - 2, my);
+                g.DrawLine(p, cx - 2, my, cx + 3, my + 5);
+            }
         }
 
         // Карточка пункта меню: значок, название, примечание из скобок, справа стрелка, галочка или переключатель
@@ -1586,6 +1805,55 @@ namespace ZapretTray
             g.SmoothingMode = SmoothingMode.AntiAlias;
 
             int right = r.Right - 12;
+            ToolStripMenuItem[] extra;
+            if (Buttons.TryGetValue(item, out extra))
+                for (int i = extra.Length - 1; i >= 0; i--)
+                {
+                    var b = extra[i];
+                    var label = b.Text.TrimEnd('.');
+                    int bw = TextRenderer.MeasureText(g, label, MenuKit.Bold).Width + 30;
+                    var br = new Rectangle(right - bw, r.Top + (r.Height - 34) / 2, bw, 34);
+                    cardButtons.Add(new KeyValuePair<Rectangle, ToolStripMenuItem>(new Rectangle(br.X, br.Y + offset, br.Width, br.Height), b));
+                    bool main = i == extra.Length - 1 && b.Enabled, over = hover == b && b.Enabled;
+                    if (main)
+                    {
+                        Accent(g, br, 8);
+                        if (over) using (var hb = new SolidBrush(Color.FromArgb(40, Color.White))) using (var rp = ThemedRenderer.RoundRect(br, 8)) g.FillPath(hb, rp);
+                    }
+                    else Card(g, br, over ? P.Hover : Mix(P.Card, P.Tile, 0.7f), 8);
+                    TextRenderer.DrawText(g, label, MenuKit.Bold, br, main ? Color.White : b.Enabled ? P.Text : P.Disabled,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+                    right = br.Left - 8;
+                }
+            if (Segments.TryGetValue(item, out extra))
+            {
+                var widths = new int[extra.Length];
+                int total = 6;
+                for (int i = 0; i < extra.Length; i++) { widths[i] = TextRenderer.MeasureText(g, extra[i].Text, MenuKit.Small).Width + 22; total += widths[i]; }
+                var box = new Rectangle(right - total, r.Top + (r.Height - 34) / 2, total, 34);
+                Box(g, box, Mix(P.Back, P.Card, 0.4f), 9);
+                using (var pen = new Pen(P.Border)) using (var bp = ThemedRenderer.RoundRect(box, 9)) g.DrawPath(pen, bp);
+                int sx = box.Left + 3;
+                for (int i = 0; i < extra.Length; i++)
+                {
+                    var sr = new Rectangle(sx, box.Top + 3, widths[i], box.Height - 6);
+                    cardButtons.Add(new KeyValuePair<Rectangle, ToolStripMenuItem>(new Rectangle(sr.X, sr.Y + offset, sr.Width, sr.Height), extra[i]));
+                    if (extra[i].Checked) Accent(g, sr, 7);
+                    else if (hover == extra[i]) Box(g, sr, P.Hover, 7);
+                    TextRenderer.DrawText(g, extra[i].Text, MenuKit.Small, sr, extra[i].Checked ? Color.White : P.Text,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+                    sx += widths[i];
+                }
+                right = box.Left - 10;
+                // Подпись слева от переключателя: что он выбирает. Хранится в подсказке первого варианта
+                var caption = extra[0].ToolTipText;
+                if (!string.IsNullOrEmpty(caption))
+                {
+                    int lw = TextRenderer.MeasureText(g, caption, MenuKit.Small).Width;
+                    TextRenderer.DrawText(g, caption, MenuKit.Small, new Rectangle(right - lw, r.Top, lw + 2, r.Height), P.SubText, Line);
+                    right -= lw + 12;
+                }
+            }
             if (item == ScaleItem && ScaleChanged != null)
             {
                 DrawScaleSlider(g, r);

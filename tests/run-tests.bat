@@ -19,7 +19,7 @@ if exist "%WORK%" rmdir /s /q "%WORK%"
 mkdir "%WORK%"
 set FAILED=0
 
-for %%t in (UiTests:T LogicTests:U ReportTests:R AnimationTests:A BugTests:B WindowTests:W Screenshots:Shots) do (
+for %%t in (UiTests:T LogicTests:U ReportTests:R AnimationTests:A BugTests:B WindowTests:W CoverageTests:Cov Screenshots:Shots) do (
     for /f "tokens=1,2 delims=:" %%a in ("%%t") do (
         mkdir "%WORK%\%%a"
         "%CSC%" /nologo /codepage:65001 /nowarn:649,169,414,162,168,219 /target:exe /main:ZapretTray.%%b %REFS% %HOOKRES% /res:src\icons\arc.png,arc.png /res:src\icons\wardogs.png,wardogs.png /out:"%WORK%\%%a\run.exe" tests\%%a.cs !SRC! >"%WORK%\%%a\build.txt"

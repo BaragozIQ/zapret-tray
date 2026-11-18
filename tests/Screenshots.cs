@@ -62,14 +62,14 @@ namespace ZapretTray
             menu.Items.AddRange(new ToolStripItem[] { st, he, sp });
             var games = I("Мои игры", "games", null);
             var sites = I("Мои сайты", "sites", null);
-            var conn = I("Подключение", "connection", null);
             var set = I("Настройки", "settings", null);
-            var hints = I("Подсказки", "hints", null);
+            var hints = I("Подсказки", "hints", "Что делать, если что-то не работает");
+            var checks = I("Обязательные проверки", "ping", "Под какие сайты подбирать конфиг");
             var f1 = I("Подобрать конфиг заново", "fast", "Если сайт или игра перестали открываться");
             var f2 = I("Отправить баг", "load", "Отчёт сам уйдёт разработчику");
             var tg = I("Выключить", "power", null);
             var ex = I("Выход", "exit", null);
-            menu.Items.AddRange(new ToolStripItem[] { games, sites, conn, set, hints, f1, f2, tg, ex });
+            menu.Items.AddRange(new ToolStripItem[] { games, sites, set, f1, f2, tg, ex });
 
             games.DropDownItems.Add(I("Добавить игру...", "plus", "Выбери запущенную игру из списка"));
             games.DropDownItems.Add(MenuKit.Sep("Встроенные игры"));
@@ -81,11 +81,6 @@ namespace ZapretTray
             games.DropDownItems.Add(arc);
             games.DropDownItems.Add(wardogs);
 
-            conn.DropDownItems.Add(I("Подобрать конфиг заново", "fast", "Если сайт или игра перестали открываться"));
-            conn.DropDownItems.Add(I("Подобрать конфиг с лучшим пингом", "ping", "Проверит все и выберет быстрый, это дольше"));
-            conn.DropDownItems.Add(MenuKit.Sep("DNS"));
-            conn.DropDownItems.Add(I("Исправить DNS", "dns", "С откатом"));
-            conn.DropDownItems.Add(I("Вернуть DNS как было", "undo", null));
 
             var watchdog = I("Сторож", "shield", "Сам чинит");
             watchdog.Tag = ItemKind.Toggle;
@@ -94,18 +89,53 @@ namespace ZapretTray
             theme.DropDownItems.Add(I("Тёмная", "moon", null));
             var size = I("Размер окна", "monitor", null);
             foreach (var v in ControlPanel.ScaleStops) size.DropDownItems.Add(I(v + "%", "monitor", null));
-            var behavior = I("Поведение", "sliders", "Сторож, автозапуск, обновления");
+            var behavior = I("Поведение", "config", "Сторож, автозапуск, уведомления");
             behavior.DropDownItems.Add(watchdog);
+            // Настройки одной страницей, как в Tray.BuildMenu
+            var version = I("Версия " + AppInfo.Version, "refresh", "zapret 1.9.0");
+            var versionButton = I("Проверить", "refresh", null);
+            var modes = new[] { I("Спрашивать", "refresh", "Новая версия:"), I("Сама", "refresh", null), I("Вручную", "refresh", null) };
+            modes[0].Checked = true;
+            var trouble = I("Что-то не работает", "report", "Твой номер 4821-7735-0912 · нажми, чтобы скопировать");
+            var copyReport = I("Скопировать отчёт", "report", null);
+            var sendBug = I("Отправить баг", "load", null);
+            var manual = I("Выбрать конфиг вручную", "list", null);
             set.DropDownItems.AddRange(new ToolStripItem[] {
-                MenuKit.Sep("Вид"), theme, size, MenuKit.Sep("Работа"), behavior, I("Проверить обновления", "refresh", "сейчас " + AppInfo.Version),
+                MenuKit.Sep("Обновления"), version, modes[0], modes[1], modes[2],
+                MenuKit.Sep("Подключение"), I("Подобрать конфиг заново", "fast", "Если сайт или игра перестали открываться"), I("Подобрать конфиг с лучшим пингом", "ping", "Проверит все и выберет быстрый, это дольше"),
+                I("Исправить DNS", "dns", "Если YouTube не находится"), I("Вернуть DNS как было", "undo", "Настройки DNS станут как раньше"), manual,
+                MenuKit.Sep("Помощь"), hints, trouble, copyReport, sendBug,
+                MenuKit.Sep("Вид"), theme, size, MenuKit.Sep("Работа"), behavior, checks,
                 MenuKit.Sep("Перенос настроек"), I("Сохранить настройки", "save", "В файл, чтобы взять на другой компьютер"), I("Подгрузить настройки", "load", "Взять из сохранённого файла"),
                 MenuKit.Sep("Программа"), I("Открыть папку", "folder", "Файлы и журнал программы"), I("Удалить программу", "trash", "Сначала спросит подтверждение") });
 
             var list = new List<Tuple<string, string, bool>> { Tuple.Create("rutracker.org", "list", false), Tuple.Create("example.com", "list", true), Tuple.Create("1.2.3.4", "ipset", false) };
             var hintsView = new HintsView();
             var p = new ControlPanel(st, he, sp, () => Theme.On, () => "отклик 183 мс\tотклик 120 мс\tотклик 90 мс\nпинг 44 мс\tотклик 200 мс\nпинг 28 мс",
-                new[] { games, sites, conn, set, hints }, new[] { f1, f2 }, tg, ex, () => { },
-                new Dictionary<ToolStripMenuItem, IPanelView> { { sites, new SitesView(() => list, (x, y) => { }, (x, y) => { }, x => { }) }, { hints, hintsView } });
+                new[] { games, sites, set }, new[] { f1, f2 }, tg, ex, () => { },
+                new Dictionary<ToolStripMenuItem, IPanelView> { { sites, new SitesView(() => list, (x, y) => { }, (x, y) => { }, x => { }) }, { hints, hintsView },
+                    { checks, new ChecksView(() => new List<Check> { new Check("https://youtube.com", true), new Check("https://discord.com", true), new Check("https://arcraiders.com", false) }, x => { }, (x, y) => { }, x => { }) } });
+            p.Wide.Add(version);
+            p.Wide.Add(trouble);
+            p.Wide.Add(hints);
+            p.Segments[version] = modes;
+            p.Buttons[version] = new[] { versionButton };
+            p.Buttons[trouble] = new[] { copyReport, sendBug };
+            p.Hidden.Add(manual);
+            p.Hidden.Add(copyReport);
+            p.Hidden.Add(sendBug);
+            foreach (var m in modes) p.Hidden.Add(m);
+            bool hasUpdate = false;
+            p.HasUpdate = () => hasUpdate;
+            // Плашка статуса: конфиги и действия под ними
+            foreach (var c in new[] { "general", "general (ALT)", "general (ALT2)", "general (ALT3)", "general (ALT4)", "general (ALT5)", "general (ALT6)", "general (ALT7)", "general (ALT8)", "general (ALT9)", "general (ALT10)", "general (ALT11)", "general (FAKE TLS AUTO)", "general (SIMPLE FAKE)" })
+            {
+                var ci = I(c, "config", null);
+                ci.Checked = c == "general (ALT11)";
+                manual.DropDownItems.Add(ci);
+            }
+            p.ConfigMenu = manual;
+            p.PillActions = new[] { f1, I("Подобрать конфиг с лучшим пингом", "ping", null), tg };
             p.ToggleTheme = () => { };
             p.ScaleItem = size;
             p.ScaleChanged = v => { };
@@ -137,10 +167,41 @@ namespace ZapretTray
             if (scale == 100)
             {
                 p.OpenSection(games); Save(p, name + "games");
-                p.OpenSection(conn); Save(p, name + "connection");
                 p.OpenSection(set); Save(p, name + "settings");
+                // Полоску прокрутки тянут мышью; клик по пустому месту полоски перематывает туда
+                Func<Point, Point> D = pt => p.ToDevice(new Rectangle(pt, new Size(1, 1))).Location;
+                Action<string, Point> M = (what, pt) => typeof(Control).GetMethod(what, hidden).Invoke(p, new object[] { new MouseEventArgs(MouseButtons.Left, 1, D(pt).X, D(pt).Y, 0) });
+                var grab = p.ScrollThumbCenter;
+                M("OnMouseDown", grab); M("OnMouseMove", new Point(grab.X, grab.Y + 150)); M("OnMouseUp", new Point(grab.X, grab.Y + 150));
+                Ok(p.Scroll > 0, mode + " полоску прокрутки можно тянуть мышью");
+                int dragged = p.Scroll;
+                M("OnMouseDown", new Point(grab.X, 80)); M("OnMouseUp", new Point(grab.X, 80));
+                Ok(p.Scroll < dragged, mode + " клик по полоске выше ползунка мотает вверх");
+                typeof(ControlPanel).GetField("scroll", hidden).SetValue(p, 0);
+                // Низ настроек: прокручено до конца
+                typeof(ControlPanel).GetField("scroll", hidden).SetValue(p, 10000);
+                Save(p, name + "settings-bottom");
+                // Нашлась новая версия: стрелка в карточке, "Обновить", точка на "Настройках"
+                hasUpdate = true;
+                version.Text = "Версия " + AppInfo.Version + " → 9.9";
+                version.ToolTipText = "Вышла новая. Без тебя не поставлю";
+                versionButton.Text = "Обновить";
+                p.OpenSection(set); Save(p, name + "settings-update");
+                hasUpdate = false;
+                p.OpenByName("Обязательные проверки"); Save(p, name + "checks");
+                p.OpenByName("Подсказки"); Save(p, name + "hints");
+                Ok(p.OpenByName("Подсказки"), "подсказки открываются из настроек по названию");
+                Ok(!p.OpenByName("Подобрать конфиг заново"), "по названию не нажимается обычный пункт");
                 p.OpenSection(sites); Save(p, name + "sites");
-                p.OpenSection(hints); Save(p, name + "hints");
+                // Плашка «Работает · ALT» раскрывает список конфигов, клик мимо закрывает
+                p.OpenSection(null); p.Refresh();
+                M("OnMouseClick", p.PillCenter);
+                Ok(p.PillOpen, mode + " плашка статуса раскрывает список конфигов");
+                Save(p, name + "home-pill");
+                M("OnMouseClick", new Point(300, 600));
+                Ok(!p.PillOpen, mode + " клик мимо закрывает список конфигов");
+                p.OpenSection(sites); p.Refresh();
+                Ok(p.PillCenter.X > 0, mode + " плашка есть и на «Моих сайтах»");
             }
             p.Close();
         }
@@ -148,6 +209,15 @@ namespace ZapretTray
         static void Dialogs(string mode)
         {
             Theme.Mode = mode;
+            // Окно вопроса "Вышла новая версия" - конструктор закрытый, снимаем через него напрямую
+            var ask = (Form)typeof(WhatsNewDialog).GetConstructor(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance, null, new[] { typeof(string), typeof(string) }, null)
+                .Invoke(new object[] { "9.9", AppInfo.Version });
+            ask.StartPosition = FormStartPosition.Manual;
+            ask.Location = new Point(-4000, -4000);
+            ask.Show();
+            Application.DoEvents();
+            Save(ask, mode + "-update-ask");
+            ask.Close();
             foreach (var f in new Form[] { new BugDialog(), new WhatsNewDialog("0.7"), new WhatsNewDialog(WhatsNewDialog.Welcome) })
             {
                 f.StartPosition = FormStartPosition.Manual;

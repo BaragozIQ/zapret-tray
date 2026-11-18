@@ -188,6 +188,14 @@ namespace ZapretTray
     // Внешний IP, историю сайтов и свои списки сюда не пишем, имя пользователя заменяем
     static class ProblemReport
     {
+        // Режим обновлений словами, как в настройках. Не выбирали - спрашивать или, если при установке сняли галочку, вручную
+        static string UpdateModeText(Settings ini)
+        {
+            var m = ini.Get("update_mode");
+            if (m == null) m = ini.Get("autoupdate") == "0" ? "manual" : "ask";
+            return m == "auto" ? "сама" : m == "manual" ? "вручную" : "спрашивать";
+        }
+
         const int LogLines = 200;
         static readonly string[] DnsHosts = { "www.youtube.com", "i.ytimg.com", "discord.com" };
         static readonly string[] DnsServers = { null, "1.1.1.1", "8.8.8.8", "9.9.9.9" };   // null - DNS Windows
@@ -346,7 +354,7 @@ namespace ZapretTray
             o.AppendLine("Статус: " + status);
             o.AppendLine("winws: " + (winws ? "работает, запущено " + local.WinwsCount + ", с " + local.WinwsSince : "не работает"));
             o.AppendLine("Конфиги: " + string.Join(", ", Util.ReadEntries(paths.BestConfig)));
-            o.AppendLine("Сторож: " + (ini.GetBool("watchdog", true) ? "включён" : "выключен") + ", автообновление: " + (ini.GetBool("autoupdate", true) ? "включено" : "выключено"));
+            o.AppendLine("Сторож: " + (ini.GetBool("watchdog", true) ? "включён" : "выключен") + ", обновления: " + UpdateModeText(ini));
             o.AppendLine("Игровой фильтр: " + (File.Exists(Path.Combine(paths.Utils, "game_filter.enabled")) ? "включён" : "выключен"));
             o.AppendLine("Служба zapret: " + (service ? "есть" : "нет"));
             o.AppendLine("Другие обходчики: " + (others.Count > 0 ? string.Join(", ", others) : "нет"));

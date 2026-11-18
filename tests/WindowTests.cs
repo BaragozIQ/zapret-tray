@@ -26,6 +26,11 @@ namespace ZapretTray
     class TestBugDialog : BugDialog
     {
         public void Down(Point p) { OnMouseDown(new MouseEventArgs(MouseButtons.Left, 1, p.X, p.Y, 0)); }
+        // Из стоп-хука тесты идут в фоне: Windows может отнять фокус в любой миг, и окно закрылось бы раньше проверок.
+        // Пока проверяем поле, уход фокуса окно не закрывает; закрытие при уходе проверяется в конце отдельно
+        public bool CloseOnDeactivate;
+        protected override void OnDeactivate(EventArgs e) { if (CloseOnDeactivate) base.OnDeactivate(e); }
+        public void Leave() { base.OnDeactivate(EventArgs.Empty); }
     }
 
     static class W
@@ -50,6 +55,22 @@ namespace ZapretTray
         static Point Device(TestPanel p, float x, float y) { return new Point((int)(x * p.UiScale), (int)(y * p.UiScale)); }
 
         [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool attach);
+
+        // Тесты из хука идут в фоне, и Windows не отдаёт фокус фоновой программе.
+        // Прицепляемся к потоку переднего окна: тогда SetForegroundWindow срабатывает.
+        static void Foreground(Form f)
+        {
+            var fg = GetForegroundWindow();
+            uint other = fg == IntPtr.Zero ? 0 : GetWindowThreadProcessId(fg, IntPtr.Zero), me = GetCurrentThreadId();
+            bool attached = other != 0 && other != me && AttachThreadInput(me, other, true);
+            try { SetForegroundWindow(f.Handle); f.Activate(); }
+            finally { if (attached) AttachThreadInput(me, other, false); }
+        }
 
         [STAThread]
         static void Main()
@@ -130,7 +151,7 @@ namespace ZapretTray
             // Свернуть, развернуть, закрыть
             var other = new Form { StartPosition = FormStartPosition.Manual, Location = new Point(-3000, -2000), ShowInTaskbar = false };
             other.Show();
-            other.Activate();
+            Foreground(other);
             Pump(300);
             Ok(!p.IsDisposed && p.Visible, "окно не пропадает, когда ушёл в другое окно");
             p.Tap(new Point(p.ClientSize.Width - 62, 20));
@@ -330,9 +351,10 @@ namespace ZapretTray
         static void Bug()
         {
             Theme.Mode = Theme.Dark;
-            var d = new TestBugDialog { StartPosition = FormStartPosition.Manual, Location = new Point(80, 80) };
+            // TopMost: снимок экрана берёт точки поля, его не должно ничего закрывать, даже если окно не в фокусе
+            var d = new TestBugDialog { StartPosition = FormStartPosition.Manual, Location = new Point(80, 80), TopMost = true };
             d.Show();
-            d.Activate();
+            Foreground(d);
             Pump(500);
             var box = (TextBox)typeof(BugDialog).GetField("box", Hidden).GetValue(d);
             var field = (Rectangle)typeof(BugDialog).GetField("field", Hidden).GetValue(d);
@@ -360,12 +382,17 @@ namespace ZapretTray
             Ok(typed < 5, "напечатал - строки подсказки ниже первой стёрты: точек " + typed);
             box.Text = "";
 
+            d.CloseOnDeactivate = true;
             var other = new Form { StartPosition = FormStartPosition.Manual, Location = new Point(700, 80), Size = new Size(200, 100), ShowInTaskbar = false };
             other.Show();
-            other.Activate();
+            Foreground(other);
             Pump(500);
-            Ok(d.IsDisposed || !d.Visible, "нажал мимо окна - окно бага закрылось");
+            // В фоне Windows могла не переключить окна и не прислать уход фокуса: тогда присылаем его сами
+            bool real = d.IsDisposed || !d.Visible;
+            if (!real) { d.Leave(); Pump(300); }
+            Ok(d.IsDisposed || !d.Visible, "нажал мимо окна - окно бага закрылось" + (real ? "" : " (уход фокуса прислан тестом: запуск в фоне)"));
             other.Close();
+            if (!d.IsDisposed) d.Dispose();
         }
     }
 }
